@@ -651,6 +651,7 @@ type appServices struct {
 	config         configRepository
 	sessions       sessionRepository
 	status         *serviceStatusService
+	github         *githubActivityService
 	ttl            time.Duration
 	cookieDomain   string
 	corsOrigin     string
@@ -671,6 +672,7 @@ func newApp(dependencies []dependency, services ...appServices) *fiber.App {
 	service := services[0]
 	app.Use(cors.New(cors.Config{AllowOrigins: service.corsOrigin, AllowMethods: "GET,POST,PUT,DELETE,OPTIONS", AllowHeaders: "Content-Type", AllowCredentials: true}))
 	app.Get("/api/v1/service-status", service.serviceStatus)
+	app.Get("/api/v1/github", service.githubActivity)
 	app.Post("/api/v1/admin/session", service.login)
 	app.Delete("/api/v1/admin/session", service.logout)
 	app.Get("/api/v1/admin/session", service.requireSession(service.sessionStatus))
@@ -681,6 +683,10 @@ func newApp(dependencies []dependency, services ...appServices) *fiber.App {
 
 func (service appServices) serviceStatus(c *fiber.Ctx) error {
 	return c.JSON(service.status.current(c.Context()))
+}
+
+func (service appServices) githubActivity(c *fiber.Ctx) error {
+	return c.JSON(service.github.current(c.Context()))
 }
 
 func healthHandler(dependencies []dependency) fiber.Handler {
@@ -855,6 +861,17 @@ func main() {
 		},
 		cache: redisStatusCache{client: client},
 		ttl:   time.Minute,
+	}
+	services.github = &githubActivityService{
+		collector: productionGitHubActivityCollector{
+			username:       environmentOrDefault("GITHUB_USERNAME", "key-Naka"),
+			apiBase:        githubPublicAPIBase,
+			contributions:  githubContributionsBaseURL,
+			httpClient:     &http.Client{Timeout: 10 * time.Second},
+			requestTimeout: 5 * time.Second,
+		},
+		cache: redisGitHubActivityCache{client: client},
+		ttl:   githubActivityCacheTTL,
 	}
 	services.status.start(statusContext)
 	if err := newApp(dependencies, services).Listen(":" + port); err != nil {

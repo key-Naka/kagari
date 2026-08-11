@@ -95,6 +95,196 @@ func newTestApp(t *testing.T) (*fiber.App, *memoryAdminRepository, *memoryConfig
 	}), administrators, configuration
 }
 
+type memoryGitHubCollector struct {
+	data  githubActivityData
+	err   error
+	calls int
+}
+
+func (collector *memoryGitHubCollector) Collect(context.Context) (githubActivityData, error) {
+	collector.calls++
+	return collector.data, collector.err
+}
+
+type memoryGitHubCache struct {
+	data     githubActivityData
+	err      error
+	last     githubActivityData
+	lastErr  error
+	gets     int
+	lastGets int
+	sets     int
+	ttl      time.Duration
+}
+
+func (cache *memoryGitHubCache) Get(context.Context) (githubActivityData, error) {
+	cache.gets++
+	if cache.err != nil {
+		return githubActivityData{}, cache.err
+	}
+	return cache.data, nil
+}
+
+func (cache *memoryGitHubCache) GetLastSuccess(context.Context) (githubActivityData, error) {
+	cache.lastGets++
+	if cache.lastErr != nil {
+		return githubActivityData{}, cache.lastErr
+	}
+	return cache.last, nil
+}
+
+func (cache *memoryGitHubCache) Set(_ context.Context, data githubActivityData, ttl time.Duration) error {
+	cache.sets++
+	cache.ttl = ttl
+	cache.data = data
+	cache.err = nil
+	cache.last = data
+	cache.lastErr = nil
+	return nil
+}
+
+func TestGitHubActivityPublicAPIUsesCacheAndDegradesSafely(t *testing.T) {
+	fresh := githubActivityData{
+		Availability: availabilityOperational,
+		Contributions: []githubContributionDay{
+			{Date: "2026-08-10", Level: 3},
+		},
+		Activities: []githubActivity{
+			{Kind: "pushed", Repository: "key-Naka/kagari", OccurredAt: "2026-08-10T12:00:00Z"},
+		},
+		Repositories: []githubRepository{
+			{Name: "kagari", URL: "https://github.com/key-Naka/kagari", Description: "Personal site", UpdatedAt: "2026-08-10T12:00:00Z"},
+		},
+		SampledAt: "2026-08-10T12:00:00Z",
+	}
+
+	t.Run("caches successful public data for subsequent requests", func(t *testing.T) {
+		collector := &memoryGitHubCollector{data: fresh}
+		cache := &memoryGitHubCache{err: errors.New("cache miss")}
+		app := newApp(nil, appServices{
+			github:     &githubActivityService{collector: collector, cache: cache, ttl: time.Hour},
+			corsOrigin: "https://ykagari.top",
+		})
+
+		for requestNumber := 0; requestNumber < 2; requestNumber++ {
+			response, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/api/v1/github", nil))
+			if err != nil {
+				t.Fatalf("request GitHub activity: %v", err)
+			}
+			defer response.Body.Close()
+
+			if response.StatusCode != fiber.StatusOK {
+				t.Fatalf("status = %d, want %d", response.StatusCode, fiber.StatusOK)
+			}
+
+			var payload githubActivityData
+			if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode GitHub activity: %v", err)
+			}
+			if !payload.valid() || payload.Availability != availabilityOperational || len(payload.Contributions) != 1 || len(payload.Activities) != 1 || len(payload.Repositories) != 1 {
+				t.Errorf("payload = %#v, want cached public GitHub activity", payload)
+			}
+		}
+
+		if collector.calls != 1 || cache.sets != 1 || cache.ttl != time.Hour {
+			t.Errorf("collector calls = %d, cache sets = %d, cache ttl = %s, want 1, 1 and 1h", collector.calls, cache.sets, cache.ttl)
+		}
+	})
+
+	t.Run("returns the latest cached snapshot when collection fails", func(t *testing.T) {
+		collector := &memoryGitHubCollector{err: errors.New("upstream unavailable")}
+		cache := &memoryGitHubCache{err: errors.New("cache miss"), last: fresh}
+		app := newApp(nil, appServices{
+			github:     &githubActivityService{collector: collector, cache: cache, ttl: time.Hour},
+			corsOrigin: "https://ykagari.top",
+		})
+
+		response, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/api/v1/github", nil))
+		if err != nil {
+			t.Fatalf("request GitHub activity: %v", err)
+		}
+		defer response.Body.Close()
+
+		var payload githubActivityData
+		if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode GitHub activity: %v", err)
+		}
+		if payload.Availability != availabilityDegraded || len(payload.Contributions) != 1 || collector.calls != 1 || cache.lastGets != 1 {
+			t.Errorf("payload = %#v, collector calls = %d, last cache gets = %d, want a degraded cached snapshot", payload, collector.calls, cache.lastGets)
+		}
+	})
+
+	t.Run("returns a complete safe degraded response when no snapshot exists", func(t *testing.T) {
+		collector := &memoryGitHubCollector{err: errors.New("upstream unavailable")}
+		cache := &memoryGitHubCache{err: errors.New("cache miss"), lastErr: errors.New("no snapshot")}
+		app := newApp(nil, appServices{
+			github:     &githubActivityService{collector: collector, cache: cache, ttl: time.Hour},
+			corsOrigin: "https://ykagari.top",
+		})
+
+		response, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/api/v1/github", nil))
+		if err != nil {
+			t.Fatalf("request GitHub activity: %v", err)
+		}
+		defer response.Body.Close()
+
+		var payload githubActivityData
+		if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode GitHub activity: %v", err)
+		}
+		if !payload.valid() || payload.Availability != availabilityDegraded || len(payload.Contributions) != 0 || len(payload.Activities) != 0 || len(payload.Repositories) != 0 {
+			t.Errorf("payload = %#v, want complete degraded response", payload)
+		}
+	})
+}
+
+func TestProductionGitHubActivityCollectorUsesOnlyPublicDTOFields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/users/key-Naka/contributions":
+			_, _ = writer.Write([]byte(`<td data-date="2026-08-09" data-level="2"></td><td data-date="2026-08-10" data-level="4"></td>`))
+		case "/users/key-Naka/events/public":
+			_, _ = writer.Write([]byte(`[{"type":"PushEvent","created_at":"2026-08-10T12:00:00Z","repo":{"name":"key-Naka/kagari"},"payload":{"private":"ignored"}}]`))
+		case "/users/key-Naka/repos":
+			_, _ = writer.Write([]byte(`[{"name":"kagari","html_url":"https://github.com/key-Naka/kagari","description":"Personal site","language":"Go","stargazers_count":3,"updated_at":"2026-08-10T12:00:00Z","owner":{"login":"key-Naka"}}]`))
+		default:
+			writer.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	collector := productionGitHubActivityCollector{
+		username:       "key-Naka",
+		apiBase:        server.URL,
+		contributions:  server.URL,
+		httpClient:     server.Client(),
+		requestTimeout: time.Second,
+	}
+	data, err := collector.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("collect GitHub activity: %v", err)
+	}
+	if !data.valid() || data.Availability != availabilityOperational {
+		t.Fatalf("data = %#v, want a valid operational public DTO", data)
+	}
+	if len(data.Contributions) != 2 || data.Contributions[0].Date != "2026-08-09" || data.Contributions[1].Level != 4 {
+		t.Errorf("contributions = %#v, want sorted public contribution days", data.Contributions)
+	}
+	if len(data.Activities) != 1 || data.Activities[0].Kind != "pushed" || data.Activities[0].Repository != "key-Naka/kagari" {
+		t.Errorf("activities = %#v, want normalized public activity", data.Activities)
+	}
+	if len(data.Repositories) != 1 || data.Repositories[0].Name != "kagari" || data.Repositories[0].URL != "https://github.com/key-Naka/kagari" {
+		t.Errorf("repositories = %#v, want sanitized public repository", data.Repositories)
+	}
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("marshal GitHub activity: %v", err)
+	}
+	if strings.Contains(string(encoded), "payload") || strings.Contains(string(encoded), "private") || strings.Contains(string(encoded), "owner") {
+		t.Errorf("public GitHub DTO leaked source fields: %s", encoded)
+	}
+}
+
 func TestHealthReturnsServiceAndDependencyStatus(t *testing.T) {
 	app := newApp([]dependency{dependencyStub{name: "mysql"}, dependencyStub{name: "redis"}})
 
