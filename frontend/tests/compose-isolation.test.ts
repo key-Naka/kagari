@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
 describe('Compose 服务隔离 seam', () => {
-  it('仅发布 Web 与 API 端口，并将数据服务限制在内部网络', async () => {
+  it('仅将 Web 与 API 绑定到回环地址，且数据服务限制在内部网络', async () => {
     const compose = await readFile(resolve(import.meta.dirname, '../../docker-compose.yml'), 'utf8')
 
     const serviceBlock = (name: string) => {
@@ -12,8 +12,8 @@ describe('Compose 服务隔离 seam', () => {
       return match?.[1] || ''
     }
 
-    expect(serviceBlock('frontend')).toContain('"${FRONTEND_PORT:-3000}:3000"')
-    expect(serviceBlock('backend')).toContain('"${BACKEND_PORT:-8080}:8080"')
+    expect(serviceBlock('frontend')).toContain('"${FRONTEND_PORT:-127.0.0.1:3000}:3000"')
+    expect(serviceBlock('backend')).toContain('"${BACKEND_PORT:-127.0.0.1:18080}:8080"')
     expect(serviceBlock('frontend')).toContain('NUXT_PUBLIC_API_BASE: ${NUXT_PUBLIC_API_BASE:?NUXT_PUBLIC_API_BASE is required}')
     expect(serviceBlock('mysql')).not.toMatch(/^    ports:/m)
     expect(serviceBlock('redis')).not.toMatch(/^    ports:/m)
