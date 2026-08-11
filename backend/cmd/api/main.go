@@ -650,6 +650,7 @@ type appServices struct {
 	administrators adminRepository
 	config         configRepository
 	sessions       sessionRepository
+	projects       projectRepository
 	status         *serviceStatusService
 	github         *githubActivityService
 	ttl            time.Duration
@@ -673,11 +674,17 @@ func newApp(dependencies []dependency, services ...appServices) *fiber.App {
 	app.Use(cors.New(cors.Config{AllowOrigins: service.corsOrigin, AllowMethods: "GET,POST,PUT,DELETE,OPTIONS", AllowHeaders: "Content-Type", AllowCredentials: true}))
 	app.Get("/api/v1/service-status", service.serviceStatus)
 	app.Get("/api/v1/github", service.githubActivity)
+	app.Get("/api/v1/projects", service.publicProjects)
+	app.Get("/api/v1/projects/:slug", service.publicProject)
 	app.Post("/api/v1/admin/session", service.login)
 	app.Delete("/api/v1/admin/session", service.logout)
 	app.Get("/api/v1/admin/session", service.requireSession(service.sessionStatus))
 	app.Get("/api/v1/admin/site-config", service.requireSession(service.getSiteConfig))
 	app.Put("/api/v1/admin/site-config", service.requireSession(service.putSiteConfig))
+	app.Get("/api/v1/admin/projects", service.requireSession(service.adminProjects))
+	app.Post("/api/v1/admin/projects", service.requireSession(service.createProject))
+	app.Put("/api/v1/admin/projects/:id", service.requireSession(service.updateProject))
+	app.Delete("/api/v1/admin/projects/:id", service.requireSession(service.deleteProject))
 	return app
 }
 
@@ -832,7 +839,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	if err := db.AutoMigrate(&admin{}, &siteConfig{}); err != nil {
+	if err := db.AutoMigrate(&admin{}, &siteConfig{}, &portfolioProject{}); err != nil {
 		panic(err)
 	}
 	redisDB, err := redisDatabaseFromEnvironment()
@@ -845,7 +852,7 @@ func main() {
 		panic(err)
 	}
 
-	services := appServices{administrators: administrators, config: gormConfigRepository{db: db}, sessions: redisSessionRepository{client: client}, ttl: sessionTTL(), cookieDomain: cookieDomain(), corsOrigin: corsOrigin()}
+	services := appServices{administrators: administrators, config: gormConfigRepository{db: db}, sessions: redisSessionRepository{client: client}, projects: gormProjectRepository{db: db}, ttl: sessionTTL(), cookieDomain: cookieDomain(), corsOrigin: corsOrigin()}
 	dependencies := []dependency{databaseDependency{db: db}, redisDependency{client: client}}
 	statusContext, cancelStatus := context.WithCancel(context.Background())
 	defer cancelStatus()

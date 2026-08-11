@@ -78,6 +78,80 @@ func (repository *memorySessionRepository) Delete(_ context.Context, token strin
 	return nil
 }
 
+type memoryProjectRepository struct {
+	nextID   uint
+	projects map[uint]portfolioProject
+}
+
+func (repository *memoryProjectRepository) List(context.Context) ([]portfolioProject, error) {
+	projects := make([]portfolioProject, 0, len(repository.projects))
+	for _, project := range repository.projects {
+		projects = append(projects, project)
+	}
+	return projects, nil
+}
+
+func (repository *memoryProjectRepository) FindByID(_ context.Context, id uint) (portfolioProject, error) {
+	project, ok := repository.projects[id]
+	if !ok {
+		return portfolioProject{}, errProjectNotFound
+	}
+	return project, nil
+}
+
+func (repository *memoryProjectRepository) FindBySlug(_ context.Context, slug string) (portfolioProject, error) {
+	for _, project := range repository.projects {
+		if project.Slug == slug {
+			return project, nil
+		}
+	}
+	return portfolioProject{}, errProjectNotFound
+}
+
+func (repository *memoryProjectRepository) Save(_ context.Context, project portfolioProject) (portfolioProject, error) {
+	for id, existing := range repository.projects {
+		if id != project.ID && existing.Slug == project.Slug {
+			return portfolioProject{}, errProjectSlugTaken
+		}
+	}
+	if project.ID == 0 {
+		repository.nextID++
+		project.ID = repository.nextID
+	}
+	repository.projects[project.ID] = project
+	return project, nil
+}
+
+func (repository *memoryProjectRepository) Delete(_ context.Context, id uint) error {
+	if _, ok := repository.projects[id]; !ok {
+		return errProjectNotFound
+	}
+	delete(repository.projects, id)
+	return nil
+}
+
+type failingProjectRepository struct{ err error }
+
+func (repository failingProjectRepository) List(context.Context) ([]portfolioProject, error) {
+	return nil, repository.err
+}
+
+func (repository failingProjectRepository) FindByID(context.Context, uint) (portfolioProject, error) {
+	return portfolioProject{}, repository.err
+}
+
+func (repository failingProjectRepository) FindBySlug(context.Context, string) (portfolioProject, error) {
+	return portfolioProject{}, repository.err
+}
+
+func (repository failingProjectRepository) Save(context.Context, portfolioProject) (portfolioProject, error) {
+	return portfolioProject{}, repository.err
+}
+
+func (repository failingProjectRepository) Delete(context.Context, uint) error {
+	return repository.err
+}
+
 func newTestApp(t *testing.T) (*fiber.App, *memoryAdminRepository, *memoryConfigRepository) {
 	t.Helper()
 	administrators := &memoryAdminRepository{administrators: make(map[string]admin)}
@@ -89,6 +163,7 @@ func newTestApp(t *testing.T) (*fiber.App, *memoryAdminRepository, *memoryConfig
 		administrators: administrators,
 		config:         configuration,
 		sessions:       &memorySessionRepository{sessions: make(map[string]uint)},
+		projects:       &memoryProjectRepository{projects: make(map[uint]portfolioProject)},
 		ttl:            time.Hour,
 		cookieDomain:   ".ykagari.top",
 		corsOrigin:     "https://ykagari.top",
@@ -426,6 +501,198 @@ func TestAdminSessionAuthenticationAndSiteConfiguration(t *testing.T) {
 			t.Errorf("saved title = %v, want Updated", configuration.configuration["title"])
 		}
 	})
+}
+
+func TestPortfolioProjectsAreManagedPrivatelyAndPublishedPublicly(t *testing.T) {
+	app, _, _ := newTestApp(t)
+
+	t.Run("unauthenticated changes are rejected", func(t *testing.T) {
+		request := httptest.NewRequest(fiber.MethodPost, "/api/v1/admin/projects", strings.NewReader(`{}`))
+		request.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+		response, err := app.Test(request)
+		if err != nil {
+			t.Fatalf("create project without a session: %v", err)
+		}
+		defer response.Body.Close()
+		if response.StatusCode != fiber.StatusUnauthorized {
+			t.Errorf("status = %d, want %d", response.StatusCode, fiber.StatusUnauthorized)
+		}
+	})
+
+	loginRequest := httptest.NewRequest(fiber.MethodPost, "/api/v1/admin/session", strings.NewReader(`{"username":"admin","password":"correct horse battery staple"}`))
+	loginRequest.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+	loginResponse, err := app.Test(loginRequest)
+	if err != nil {
+		t.Fatalf("login administrator: %v", err)
+	}
+	loginResponse.Body.Close()
+	if loginResponse.StatusCode != fiber.StatusNoContent {
+		t.Fatalf("login status = %d, want %d", loginResponse.StatusCode, fiber.StatusNoContent)
+	}
+
+	adminRequest := func(method, path, body string) *http.Request {
+		request := httptest.NewRequest(method, path, strings.NewReader(body))
+		request.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+		request.Header.Set(fiber.HeaderCookie, sessionCookieName+"=test-session")
+		return request
+	}
+
+	invalidURL := `{"title":"Invalid URL","slug":"invalid-url","coverUrl":"http://cdn.example.com/cover.webp","description":"Invalid public work.","technologies":[],"types":[],"featured":false,"sortOrder":0,"status":"draft","websiteUrl":"","repositoryUrl":""}`
+	invalidResponse, err := app.Test(adminRequest(fiber.MethodPost, "/api/v1/admin/projects", invalidURL))
+	if err != nil {
+		t.Fatalf("create project with a non-HTTPS cover: %v", err)
+	}
+	defer invalidResponse.Body.Close()
+	if invalidResponse.StatusCode != fiber.StatusBadRequest {
+		t.Errorf("non-HTTPS cover status = %d, want %d", invalidResponse.StatusCode, fiber.StatusBadRequest)
+	}
+
+	draft := `{"title":"Archive Signal","slug":"archive-signal","coverUrl":"https://cdn.example.com/archive-signal.webp","description":"A public work.","technologies":["Go","Vue"],"types":["Website"],"featured":true,"sortOrder":20,"status":"draft","websiteUrl":"https://example.com","repositoryUrl":"https://github.com/key-Naka/kagari"}`
+	createResponse, err := app.Test(adminRequest(fiber.MethodPost, "/api/v1/admin/projects", draft))
+	if err != nil {
+		t.Fatalf("create draft project: %v", err)
+	}
+	defer createResponse.Body.Close()
+	if createResponse.StatusCode != fiber.StatusCreated {
+		t.Fatalf("create status = %d, want %d", createResponse.StatusCode, fiber.StatusCreated)
+	}
+
+	publicList, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/api/v1/projects", nil))
+	if err != nil {
+		t.Fatalf("list public projects while draft: %v", err)
+	}
+	defer publicList.Body.Close()
+	var unpublished []publicProjectResponse
+	if err := json.NewDecoder(publicList.Body).Decode(&unpublished); err != nil {
+		t.Fatalf("decode unpublished list: %v", err)
+	}
+	if publicList.StatusCode != fiber.StatusOK || len(unpublished) != 0 {
+		t.Fatalf("public draft list = %#v with status %d, want no projects", unpublished, publicList.StatusCode)
+	}
+
+	published := `{"title":"Archive Signal","slug":"archive-signal","coverUrl":"https://cdn.example.com/archive-signal.webp","description":"A public work.","technologies":["Go","Vue"],"types":["Website"],"featured":true,"sortOrder":20,"status":"published","websiteUrl":"https://example.com","repositoryUrl":"https://github.com/key-Naka/kagari"}`
+	updateResponse, err := app.Test(adminRequest(fiber.MethodPut, "/api/v1/admin/projects/1", published))
+	if err != nil {
+		t.Fatalf("publish project: %v", err)
+	}
+	defer updateResponse.Body.Close()
+	if updateResponse.StatusCode != fiber.StatusOK {
+		t.Fatalf("publish status = %d, want %d", updateResponse.StatusCode, fiber.StatusOK)
+	}
+
+	second := `{"title":"Secondary Work","slug":"secondary-work","coverUrl":"https://cdn.example.com/secondary-work.webp","description":"Another public work.","technologies":["TypeScript"],"types":["Interface"],"featured":false,"sortOrder":1,"status":"published","websiteUrl":"","repositoryUrl":"https://github.com/key-Naka/kagari"}`
+	secondResponse, err := app.Test(adminRequest(fiber.MethodPost, "/api/v1/admin/projects", second))
+	if err != nil {
+		t.Fatalf("create second project: %v", err)
+	}
+	defer secondResponse.Body.Close()
+	if secondResponse.StatusCode != fiber.StatusCreated {
+		t.Fatalf("second create status = %d, want %d", secondResponse.StatusCode, fiber.StatusCreated)
+	}
+
+	publicList, err = app.Test(httptest.NewRequest(fiber.MethodGet, "/api/v1/projects", nil))
+	if err != nil {
+		t.Fatalf("list published projects: %v", err)
+	}
+	defer publicList.Body.Close()
+	var publishedProjects []publicProjectResponse
+	if err := json.NewDecoder(publicList.Body).Decode(&publishedProjects); err != nil {
+		t.Fatalf("decode published list: %v", err)
+	}
+	if len(publishedProjects) != 2 || publishedProjects[0].Slug != "archive-signal" || publishedProjects[1].Slug != "secondary-work" {
+		t.Errorf("public projects = %#v, want featured project first", publishedProjects)
+	}
+
+	detailResponse, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/api/v1/projects/archive-signal", nil))
+	if err != nil {
+		t.Fatalf("get published project: %v", err)
+	}
+	defer detailResponse.Body.Close()
+	body, err := io.ReadAll(detailResponse.Body)
+	if err != nil {
+		t.Fatalf("read public project: %v", err)
+	}
+	var detail publicProjectResponse
+	if err := json.Unmarshal(body, &detail); err != nil {
+		t.Fatalf("decode public project: %v", err)
+	}
+	if detailResponse.StatusCode != fiber.StatusOK || detail.Title != "Archive Signal" || len(detail.Technologies) != 2 || strings.Contains(string(body), `"status"`) {
+		t.Errorf("public project = %#v with status %d, want a sanitized published project", detail, detailResponse.StatusCode)
+	}
+
+	unpublishResponse, err := app.Test(adminRequest(fiber.MethodPut, "/api/v1/admin/projects/1", draft))
+	if err != nil {
+		t.Fatalf("unpublish project: %v", err)
+	}
+	defer unpublishResponse.Body.Close()
+	if unpublishResponse.StatusCode != fiber.StatusOK {
+		t.Fatalf("unpublish status = %d, want %d", unpublishResponse.StatusCode, fiber.StatusOK)
+	}
+
+	hiddenResponse, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/api/v1/projects/archive-signal", nil))
+	if err != nil {
+		t.Fatalf("get unpublished project: %v", err)
+	}
+	defer hiddenResponse.Body.Close()
+	if hiddenResponse.StatusCode != fiber.StatusNotFound {
+		t.Errorf("unpublished public project status = %d, want %d", hiddenResponse.StatusCode, fiber.StatusNotFound)
+	}
+
+	republishResponse, err := app.Test(adminRequest(fiber.MethodPut, "/api/v1/admin/projects/1", published))
+	if err != nil {
+		t.Fatalf("republish project: %v", err)
+	}
+	defer republishResponse.Body.Close()
+	if republishResponse.StatusCode != fiber.StatusOK {
+		t.Fatalf("republish status = %d, want %d", republishResponse.StatusCode, fiber.StatusOK)
+	}
+
+	deleteResponse, err := app.Test(adminRequest(fiber.MethodDelete, "/api/v1/admin/projects/1", ""))
+	if err != nil {
+		t.Fatalf("delete project: %v", err)
+	}
+	defer deleteResponse.Body.Close()
+	if deleteResponse.StatusCode != fiber.StatusNoContent {
+		t.Fatalf("delete status = %d, want %d", deleteResponse.StatusCode, fiber.StatusNoContent)
+	}
+
+	missingResponse, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/api/v1/projects/archive-signal", nil))
+	if err != nil {
+		t.Fatalf("get deleted public project: %v", err)
+	}
+	defer missingResponse.Body.Close()
+	if missingResponse.StatusCode != fiber.StatusNotFound {
+		t.Errorf("deleted public project status = %d, want %d", missingResponse.StatusCode, fiber.StatusNotFound)
+	}
+
+	adminListResponse, err := app.Test(adminRequest(fiber.MethodGet, "/api/v1/admin/projects", ""))
+	if err != nil {
+		t.Fatalf("list administrator projects after delete: %v", err)
+	}
+	defer adminListResponse.Body.Close()
+	var remainingProjects []adminProjectResponse
+	if err := json.NewDecoder(adminListResponse.Body).Decode(&remainingProjects); err != nil {
+		t.Fatalf("decode administrator projects: %v", err)
+	}
+	if adminListResponse.StatusCode != fiber.StatusOK || len(remainingProjects) != 1 || remainingProjects[0].Slug != "secondary-work" {
+		t.Errorf("administrator projects = %#v with status %d, want only the undeleted project", remainingProjects, adminListResponse.StatusCode)
+	}
+}
+
+func TestPublicProjectReturnsServerErrorOnRepositoryFailure(t *testing.T) {
+	app := newApp(nil, appServices{
+		projects:   failingProjectRepository{err: errors.New("database unavailable")},
+		corsOrigin: "https://ykagari.top",
+	})
+
+	response, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/api/v1/projects/archive-signal", nil))
+	if err != nil {
+		t.Fatalf("get public project when storage fails: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != fiber.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", response.StatusCode, fiber.StatusInternalServerError)
+	}
 }
 
 type memoryStatusCache struct {
