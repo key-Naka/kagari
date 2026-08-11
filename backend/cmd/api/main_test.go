@@ -244,7 +244,7 @@ func TestProductionGitHubActivityCollectorUsesOnlyPublicDTOFields(t *testing.T) 
 		case "/users/key-Naka/contributions":
 			_, _ = writer.Write([]byte(`<td data-date="2026-08-09" data-level="2"></td><td data-date="2026-08-10" data-level="4"></td>`))
 		case "/users/key-Naka/events/public":
-			_, _ = writer.Write([]byte(`[{"type":"PushEvent","created_at":"2026-08-10T12:00:00Z","repo":{"name":"key-Naka/kagari"},"payload":{"private":"ignored"}}]`))
+			_, _ = writer.Write([]byte(`[{"type":"PushEvent","created_at":"2026-08-10T12:00:00Z","repo":{"name":"key-Naka/kagari"},"payload":{"private":"ignored"}},{"type":"IssueCommentEvent","created_at":"2026-08-10T13:00:00Z","repo":{"name":"key-Naka/kagari"}}]`))
 		case "/users/key-Naka/repos":
 			_, _ = writer.Write([]byte(`[{"name":"kagari","html_url":"https://github.com/key-Naka/kagari","description":"Personal site","language":"Go","stargazers_count":3,"updated_at":"2026-08-10T12:00:00Z","owner":{"login":"key-Naka"}}]`))
 		default:
@@ -270,7 +270,7 @@ func TestProductionGitHubActivityCollectorUsesOnlyPublicDTOFields(t *testing.T) 
 	if len(data.Contributions) != 2 || data.Contributions[0].Date != "2026-08-09" || data.Contributions[1].Level != 4 {
 		t.Errorf("contributions = %#v, want sorted public contribution days", data.Contributions)
 	}
-	if len(data.Activities) != 1 || data.Activities[0].Kind != "pushed" || data.Activities[0].Repository != "key-Naka/kagari" {
+	if len(data.Activities) != 2 || data.Activities[0].Kind != "pushed" || data.Activities[1].Kind != "commented on issue" || data.Activities[0].Repository != "key-Naka/kagari" {
 		t.Errorf("activities = %#v, want normalized public activity", data.Activities)
 	}
 	if len(data.Repositories) != 1 || data.Repositories[0].Name != "kagari" || data.Repositories[0].URL != "https://github.com/key-Naka/kagari" {
