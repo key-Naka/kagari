@@ -54,8 +54,8 @@ type healthResponse struct {
 
 type admin struct {
 	ID           uint   `gorm:"primaryKey"`
-	Username     string `gorm:"uniqueIndex;not null"`
-	PasswordHash string `gorm:"not null"`
+	Username     string `gorm:"size:255;uniqueIndex;not null"`
+	PasswordHash string `gorm:"type:text;not null"`
 }
 
 type siteConfig struct {
