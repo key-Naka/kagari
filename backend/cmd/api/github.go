@@ -359,7 +359,7 @@ func githubActivityKind(eventType string) string {
 		return "created"
 	case "IssuesEvent":
 		return "updated issue"
-	case "IssueCommentEvent":
+	case "IssueComment", "IssueCommentEvent":
 		return "commented on issue"
 	case "PullRequestEvent":
 		return "updated pull request"
