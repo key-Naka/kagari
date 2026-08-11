@@ -164,6 +164,7 @@ func newTestApp(t *testing.T) (*fiber.App, *memoryAdminRepository, *memoryConfig
 		config:         configuration,
 		sessions:       &memorySessionRepository{sessions: make(map[string]uint)},
 		projects:       &memoryProjectRepository{projects: make(map[uint]portfolioProject)},
+		posts:          &memoryPostRepository{posts: make(map[uint]blogPost)},
 		ttl:            time.Hour,
 		cookieDomain:   ".ykagari.top",
 		corsOrigin:     "https://ykagari.top",
