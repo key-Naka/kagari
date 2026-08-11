@@ -28,7 +28,7 @@ describe('Compose 服务隔离 seam', () => {
     expect(backend).toContain('- ALL')
 
     expect(hostMetrics).toContain('- /proc:/host/proc:ro')
-    expect(hostMetrics).toContain('- /proc/1/root:/host-root:ro')
+    expect(hostMetrics).toContain('- /:/host-root:ro')
     expect(hostMetrics).not.toMatch(/^    ports:/m)
     expect(hostMetrics).toContain('- private')
     expect(hostMetrics).toContain('read_only: true')
@@ -47,7 +47,7 @@ describe('Compose 服务隔离 seam', () => {
     expect(compose).toMatch(/^name: kagari$/m)
     expect(compose.match(/\/var\/run\/docker\.sock:\/var\/run\/docker\.sock:ro/g) || []).toHaveLength(1)
     expect(compose.match(/- \/proc:\/host\/proc:ro/g) || []).toHaveLength(1)
-    expect(compose.match(/- \/proc\/1\/root:\/host-root:ro/g) || []).toHaveLength(1)
+    expect(compose.match(/- \/:\/host-root:ro/g) || []).toHaveLength(1)
     expect(compose).toMatch(/^  private:\n    driver: bridge\n    internal: true/m)
   })
 })
