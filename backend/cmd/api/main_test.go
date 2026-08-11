@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -232,6 +234,194 @@ func TestAdminSessionAuthenticationAndSiteConfiguration(t *testing.T) {
 		}
 		if configuration.configuration["title"] != "Updated" {
 			t.Errorf("saved title = %v, want Updated", configuration.configuration["title"])
+		}
+	})
+}
+
+type memoryStatusCache struct {
+	status serviceStatus
+	err    error
+	gets   int
+	sets   int
+}
+
+func (cache *memoryStatusCache) Get(context.Context) (serviceStatus, error) {
+	cache.gets++
+	if cache.err != nil {
+		return serviceStatus{}, cache.err
+	}
+	return cache.status, nil
+}
+
+func (cache *memoryStatusCache) Set(_ context.Context, status serviceStatus, _ time.Duration) error {
+	cache.sets++
+	cache.status = status
+	return nil
+}
+
+type memoryStatusCollector struct {
+	status serviceStatus
+	err    error
+	calls  int
+}
+
+func (collector *memoryStatusCollector) Collect(context.Context) (serviceStatus, error) {
+	collector.calls++
+	return collector.status, collector.err
+}
+
+func successfulServiceStatus() serviceStatus {
+	return statusFromStates(
+		availabilityOperational,
+		availabilityOperational,
+		availabilityOperational,
+		availabilityOperational,
+		availabilityOperational,
+		availabilityOperational,
+		map[string]containerStatus{
+			"Web":      {Name: "Web", State: availabilityOperational, Resources: availabilityOperational},
+			"API":      {Name: "API", State: availabilityOperational, Resources: availabilityOperational},
+			"Database": {Name: "Database", State: availabilityOperational, Resources: availabilityOperational},
+			"Cache":    {Name: "Cache", State: availabilityOperational, Resources: availabilityOperational},
+		},
+		map[string]availability{"API": availabilityOperational, "HTTP": availabilityOperational, "MySQL": availabilityOperational, "Redis": availabilityOperational},
+	)
+}
+
+func TestProductionStatusCollectorSanitizesProxyFailuresAndDockerStats(t *testing.T) {
+	t.Run("invalid host metrics are unavailable without leaking the proxy response", func(t *testing.T) {
+		proxy := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(`{"cpu":"operational","memory":"secret-hostname","disk":"operational","network":"operational","uptime":"operational"}`))
+		}))
+		defer proxy.Close()
+		collector := productionStatusCollector{hostMetricsURL: proxy.URL, httpClient: proxy.Client(), requestTimeout: time.Second}
+		metrics := collector.hostMetrics(context.Background())
+		if metrics.cpu != availabilityUnavailable || metrics.memory != availabilityUnavailable {
+			t.Errorf("metrics = %#v, want all unavailable", metrics)
+		}
+	})
+
+	t.Run("HTTP non-2xx and resource thresholds degrade public status", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			switch request.URL.Path {
+			case "/status":
+				_, _ = writer.Write([]byte(`{"cpu":"operational","memory":"operational","disk":"operational","network":"operational","uptime":"operational"}`))
+			case "/containers/json":
+				_, _ = writer.Write([]byte(`[{"Id":"web-id","State":"running","Labels":{"com.docker.compose.service":"frontend"}}]`))
+			case "/containers/web-id/stats":
+				_, _ = writer.Write([]byte(`{"cpu_stats":{"cpu_usage":{"total_usage":850},"system_cpu_usage":1000,"online_cpus":1},"precpu_stats":{"cpu_usage":{"total_usage":0},"system_cpu_usage":0},"memory_stats":{"usage":10,"limit":100},"networks":{"eth0":{}}}`))
+			default:
+				writer.WriteHeader(http.StatusInternalServerError)
+			}
+		}))
+		defer server.Close()
+		collector := productionStatusCollector{hostMetricsURL: server.URL, dockerURL: server.URL, httpURL: server.URL + "/http-failure", httpClient: server.Client(), requestTimeout: time.Second}
+		status, err := collector.Collect(context.Background())
+		if err != nil {
+			t.Fatalf("collect status: %v", err)
+		}
+		if status.Availability != availabilityDegraded || status.Applications[1].State != availabilityUnavailable || status.Containers[0].Resources != availabilityDegraded {
+			t.Errorf("status = %#v, want degraded HTTP and container resources", status)
+		}
+		encoded, err := json.Marshal(status)
+		if err != nil {
+			t.Fatalf("marshal public status: %v", err)
+		}
+		for _, leaked := range []string{"web-id", "850", "1000", "http-failure"} {
+			if strings.Contains(string(encoded), leaked) {
+				t.Errorf("public status leaked %q: %s", leaked, encoded)
+			}
+		}
+	})
+}
+
+func TestServiceStatus(t *testing.T) {
+	newStatusApp := func(service *serviceStatusService) *fiber.App {
+		return newApp(nil, appServices{status: service, corsOrigin: "https://ykagari.top"})
+	}
+
+	t.Run("successful collection returns the exact public DTO", func(t *testing.T) {
+		collector := &memoryStatusCollector{status: successfulServiceStatus()}
+		cache := &memoryStatusCache{err: errors.New("cache miss")}
+		response, err := newStatusApp(&serviceStatusService{collector: collector, cache: cache, ttl: time.Minute}).Test(httptest.NewRequest(fiber.MethodGet, "/api/v1/service-status", nil))
+		if err != nil {
+			t.Fatalf("request service status: %v", err)
+		}
+		defer response.Body.Close()
+		if response.StatusCode != fiber.StatusOK {
+			t.Fatalf("status = %d, want %d", response.StatusCode, fiber.StatusOK)
+		}
+		var payload serviceStatus
+		if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode service status: %v", err)
+		}
+		if !payload.valid() || payload.Availability != availabilityOperational {
+			t.Errorf("payload = %#v, want valid operational DTO", payload)
+		}
+		if collector.calls != 1 || cache.sets != 1 {
+			t.Errorf("collector calls = %d, cache sets = %d, want 1 and 1", collector.calls, cache.sets)
+		}
+	})
+
+	t.Run("collection failure returns complete sanitized degraded DTO", func(t *testing.T) {
+		collector := &memoryStatusCollector{err: errors.New("mysql://db.internal:3306 password=secret")}
+		response, err := newStatusApp(&serviceStatusService{collector: collector}).Test(httptest.NewRequest(fiber.MethodGet, "/api/v1/service-status", nil))
+		if err != nil {
+			t.Fatalf("request service status: %v", err)
+		}
+		defer response.Body.Close()
+		body, err := io.ReadAll(response.Body)
+		if err != nil {
+			t.Fatalf("read service status: %v", err)
+		}
+		var payload serviceStatus
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("decode degraded status: %v", err)
+		}
+		if !payload.valid() || payload.Availability != availabilityDegraded {
+			t.Errorf("payload = %#v, want valid degraded DTO", payload)
+		}
+		for _, token := range []string{"password", "3306", "db.internal", "port", "hostname", "container id", "command", "env", "192.168", "12345"} {
+			if strings.Contains(strings.ToLower(string(body)), token) {
+				t.Errorf("response leaked %q: %s", token, body)
+			}
+		}
+	})
+
+	t.Run("cache hit avoids collection", func(t *testing.T) {
+		cached := successfulServiceStatus()
+		collector := &memoryStatusCollector{err: errors.New("collector must not run")}
+		cache := &memoryStatusCache{status: cached}
+		response, err := newStatusApp(&serviceStatusService{collector: collector, cache: cache, ttl: time.Minute}).Test(httptest.NewRequest(fiber.MethodGet, "/api/v1/service-status", nil))
+		if err != nil {
+			t.Fatalf("request service status: %v", err)
+		}
+		response.Body.Close()
+		if collector.calls != 0 || cache.gets != 1 {
+			t.Errorf("collector calls = %d, cache gets = %d, want 0 and 1", collector.calls, cache.gets)
+		}
+	})
+
+	t.Run("refresh shares the collection lock with current", func(t *testing.T) {
+		collector := &memoryStatusCollector{status: successfulServiceStatus()}
+		service := &serviceStatusService{collector: collector}
+		service.mu.Lock()
+		done := make(chan struct{})
+		go func() {
+			service.refresh(context.Background())
+			close(done)
+		}()
+		select {
+		case <-done:
+			t.Fatal("refresh did not wait for current collection lock")
+		case <-time.After(20 * time.Millisecond):
+		}
+		service.mu.Unlock()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("refresh did not complete after collection lock was released")
 		}
 	})
 }

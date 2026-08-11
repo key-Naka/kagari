@@ -8,10 +8,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -50,6 +53,475 @@ func (dependency redisDependency) Ping(ctx context.Context) error {
 type healthResponse struct {
 	Status       string            `json:"status"`
 	Dependencies map[string]string `json:"dependencies"`
+}
+
+const serviceStatusCacheKey = "service-status:v2"
+
+type availability string
+
+const (
+	availabilityOperational availability = "operational"
+	availabilityDegraded    availability = "degraded"
+	availabilityUnavailable availability = "unavailable"
+)
+
+type resourceStatus struct {
+	CPU     string `json:"cpu"`
+	Memory  string `json:"memory"`
+	Disk    string `json:"disk"`
+	Network string `json:"network"`
+	Uptime  string `json:"uptime"`
+}
+
+type namedStatus struct {
+	Name  string       `json:"name"`
+	State availability `json:"state"`
+}
+
+type containerStatus struct {
+	Name      string       `json:"name"`
+	State     availability `json:"state"`
+	Resources availability `json:"resources"`
+}
+
+// serviceStatus is the exact, sanitized public status contract.
+type serviceStatus struct {
+	Availability availability      `json:"availability"`
+	Resources    resourceStatus    `json:"resources"`
+	Containers   []containerStatus `json:"containers"`
+	Applications []namedStatus     `json:"applications"`
+	SampledAt    string            `json:"sampledAt"`
+}
+
+type statusCollector interface {
+	Collect(context.Context) (serviceStatus, error)
+}
+
+type statusCache interface {
+	Get(context.Context) (serviceStatus, error)
+	Set(context.Context, serviceStatus, time.Duration) error
+}
+
+type redisStatusCache struct{ client *redis.Client }
+
+func (cache redisStatusCache) Get(ctx context.Context) (serviceStatus, error) {
+	encoded, err := cache.client.Get(ctx, serviceStatusCacheKey).Bytes()
+	if err != nil {
+		return serviceStatus{}, fmt.Errorf("get service status cache: %w", err)
+	}
+	var status serviceStatus
+	if err := json.Unmarshal(encoded, &status); err != nil {
+		return serviceStatus{}, fmt.Errorf("decode service status cache: %w", err)
+	}
+	if !status.valid() {
+		return serviceStatus{}, errors.New("cached service status has an invalid public contract")
+	}
+	return status, nil
+}
+
+func (cache redisStatusCache) Set(ctx context.Context, status serviceStatus, ttl time.Duration) error {
+	encoded, err := json.Marshal(status)
+	if err != nil {
+		return fmt.Errorf("encode service status cache: %w", err)
+	}
+	if err := cache.client.Set(ctx, serviceStatusCacheKey, encoded, ttl).Err(); err != nil {
+		return fmt.Errorf("set service status cache: %w", err)
+	}
+	return nil
+}
+
+func (status serviceStatus) valid() bool {
+	if !validAvailability(status.Availability) || status.SampledAt == "" {
+		return false
+	}
+	if _, err := time.Parse(time.RFC3339, status.SampledAt); err != nil {
+		return false
+	}
+	for _, value := range []string{status.Resources.CPU, status.Resources.Memory, status.Resources.Disk, status.Resources.Network, status.Resources.Uptime} {
+		if !validAvailability(availability(value)) {
+			return false
+		}
+	}
+	return validContainerStatuses(status.Containers, []string{"Web", "API", "Database", "Cache"}) && validNamedStatuses(status.Applications, []string{"API", "HTTP", "MySQL", "Redis"})
+}
+
+func validAvailability(value availability) bool {
+	return value == availabilityOperational || value == availabilityDegraded || value == availabilityUnavailable
+}
+
+func validNamedStatuses(values []namedStatus, names []string) bool {
+	if len(values) != len(names) {
+		return false
+	}
+	for index, name := range names {
+		if values[index].Name != name || !validAvailability(values[index].State) {
+			return false
+		}
+	}
+	return true
+}
+
+func validContainerStatuses(values []containerStatus, names []string) bool {
+	if len(values) != len(names) {
+		return false
+	}
+	for index, name := range names {
+		if values[index].Name != name || !validAvailability(values[index].State) || !validAvailability(values[index].Resources) {
+			return false
+		}
+	}
+	return true
+}
+
+type serviceStatusService struct {
+	collector statusCollector
+	cache     statusCache
+	ttl       time.Duration
+	mu        sync.Mutex
+}
+
+func degradedServiceStatus() serviceStatus {
+	return statusFromStates(availabilityDegraded, availabilityUnavailable, availabilityUnavailable, availabilityUnavailable, availabilityUnavailable, availabilityUnavailable, unavailableContainers(), nil)
+}
+
+func statusFromStates(overall, cpu, memory, disk, network, uptime availability, containers map[string]containerStatus, applications map[string]availability) serviceStatus {
+	status := serviceStatus{
+		Availability: overall,
+		Resources:    resourceStatus{CPU: string(cpu), Memory: string(memory), Disk: string(disk), Network: string(network), Uptime: string(uptime)},
+		Containers:   []containerStatus{{Name: "Web", State: availabilityUnavailable, Resources: availabilityUnavailable}, {Name: "API", State: availabilityUnavailable, Resources: availabilityUnavailable}, {Name: "Database", State: availabilityUnavailable, Resources: availabilityUnavailable}, {Name: "Cache", State: availabilityUnavailable, Resources: availabilityUnavailable}},
+		Applications: []namedStatus{{Name: "API", State: availabilityUnavailable}, {Name: "HTTP", State: availabilityUnavailable}, {Name: "MySQL", State: availabilityUnavailable}, {Name: "Redis", State: availabilityUnavailable}},
+		SampledAt:    time.Now().UTC().Format(time.RFC3339),
+	}
+	for index := range status.Containers {
+		if container, ok := containers[status.Containers[index].Name]; ok {
+			status.Containers[index] = container
+		}
+	}
+	for index := range status.Applications {
+		if state, ok := applications[status.Applications[index].Name]; ok {
+			status.Applications[index].State = state
+		}
+	}
+	return status
+}
+
+func (service *serviceStatusService) current(ctx context.Context) serviceStatus {
+	if service == nil || service.collector == nil {
+		return degradedServiceStatus()
+	}
+	if service.cache != nil {
+		if status, err := service.cache.Get(ctx); err == nil {
+			return status
+		}
+	}
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	if service.cache != nil {
+		if status, err := service.cache.Get(ctx); err == nil {
+			return status
+		}
+	}
+	return service.collectAndCache(ctx)
+}
+
+func (service *serviceStatusService) collectAndCache(ctx context.Context) serviceStatus {
+	status, err := service.collector.Collect(ctx)
+	if err != nil || !status.valid() {
+		return degradedServiceStatus()
+	}
+	if service.cache != nil {
+		_ = service.cache.Set(ctx, status, service.ttl)
+	}
+	return status
+}
+
+func (service *serviceStatusService) refresh(ctx context.Context) {
+	if service == nil || service.collector == nil {
+		return
+	}
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	service.collectAndCache(ctx)
+}
+
+func (service *serviceStatusService) start(ctx context.Context) {
+	if service == nil {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				refreshCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				service.refresh(refreshCtx)
+				cancel()
+			}
+		}
+	}()
+}
+
+type productionStatusCollector struct {
+	mysql          dependency
+	redis          dependency
+	dockerURL      string
+	hostMetricsURL string
+	httpURL        string
+	httpClient     *http.Client
+	requestTimeout time.Duration
+}
+
+func (collector productionStatusCollector) Collect(ctx context.Context) (serviceStatus, error) {
+	host := collector.hostMetrics(ctx)
+	containers := collector.docker(ctx)
+	applications := map[string]availability{
+		"API":   availabilityOperational,
+		"HTTP":  collector.http(ctx),
+		"MySQL": dependencyAvailability(ctx, collector.mysql),
+		"Redis": dependencyAvailability(ctx, collector.redis),
+	}
+	overall := availabilityOperational
+	for _, state := range []availability{host.cpu, host.memory, host.disk, host.network, host.uptime, applications["HTTP"], applications["MySQL"], applications["Redis"]} {
+		if state != availabilityOperational {
+			overall = availabilityDegraded
+			break
+		}
+	}
+	for _, container := range containers {
+		if container.State != availabilityOperational || container.Resources != availabilityOperational {
+			overall = availabilityDegraded
+			break
+		}
+	}
+	return statusFromStates(overall, host.cpu, host.memory, host.disk, host.network, host.uptime, containers, applications), nil
+}
+
+func dependencyAvailability(ctx context.Context, service dependency) availability {
+	if service == nil {
+		return availabilityUnavailable
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	if err := service.Ping(checkCtx); err != nil {
+		return availabilityUnavailable
+	}
+	return availabilityOperational
+}
+
+type hostMetricsStatus struct {
+	cpu     availability
+	memory  availability
+	disk    availability
+	network availability
+	uptime  availability
+}
+
+type hostMetricsDTO struct {
+	CPU     availability `json:"cpu"`
+	Memory  availability `json:"memory"`
+	Disk    availability `json:"disk"`
+	Network availability `json:"network"`
+	Uptime  availability `json:"uptime"`
+}
+
+func (collector productionStatusCollector) hostMetrics(ctx context.Context) hostMetricsStatus {
+	unavailable := hostMetricsStatus{cpu: availabilityUnavailable, memory: availabilityUnavailable, disk: availabilityUnavailable, network: availabilityUnavailable, uptime: availabilityUnavailable}
+	endpoint, err := url.Parse(collector.hostMetricsURL)
+	if err != nil {
+		return unavailable
+	}
+	endpoint.Path = "/status"
+	endpoint.RawQuery = ""
+	requestCtx, cancel := context.WithTimeout(ctx, collector.requestTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return unavailable
+	}
+	response, err := collector.httpClient.Do(request)
+	if err != nil || response.StatusCode != http.StatusOK {
+		if response != nil {
+			response.Body.Close()
+		}
+		return unavailable
+	}
+	defer response.Body.Close()
+	var metrics hostMetricsDTO
+	decoder := json.NewDecoder(io.LimitReader(response.Body, 4096))
+	decoder.DisallowUnknownFields()
+	if decoder.Decode(&metrics) != nil || decoder.Decode(&struct{}{}) != io.EOF || !validAvailability(metrics.CPU) || !validAvailability(metrics.Memory) || !validAvailability(metrics.Disk) || !validAvailability(metrics.Network) || !validAvailability(metrics.Uptime) {
+		return unavailable
+	}
+	return hostMetricsStatus{cpu: metrics.CPU, memory: metrics.Memory, disk: metrics.Disk, network: metrics.Network, uptime: metrics.Uptime}
+}
+
+func (collector productionStatusCollector) http(ctx context.Context) availability {
+	requestCtx, cancel := context.WithTimeout(ctx, collector.requestTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, collector.httpURL, nil)
+	if err != nil {
+		return availabilityUnavailable
+	}
+	response, err := collector.httpClient.Do(request)
+	if err != nil {
+		return availabilityUnavailable
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return availabilityUnavailable
+	}
+	return availabilityOperational
+}
+
+func (collector productionStatusCollector) docker(ctx context.Context) map[string]containerStatus {
+	states := unavailableContainers()
+	endpoint, err := url.Parse(collector.dockerURL)
+	if err != nil {
+		return states
+	}
+	endpoint.Path = "/containers/json"
+	query := endpoint.Query()
+	query.Set("filters", `{"label":["com.docker.compose.project=kagari"]}`)
+	endpoint.RawQuery = query.Encode()
+	requestCtx, cancel := context.WithTimeout(ctx, collector.requestTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return states
+	}
+	response, err := collector.httpClient.Do(request)
+	if err != nil || response.StatusCode != http.StatusOK {
+		if response != nil {
+			response.Body.Close()
+		}
+		return states
+	}
+	defer response.Body.Close()
+	var containers []dockerContainer
+	if json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&containers) != nil {
+		return states
+	}
+	for _, container := range containers {
+		component := dockerComponent(container.Labels, container.Names)
+		if component == "" {
+			continue
+		}
+		if container.State != "running" || container.ID == "" {
+			states[component] = containerStatus{Name: component, State: availabilityDegraded, Resources: availabilityUnavailable}
+			continue
+		}
+		states[component] = containerStatus{Name: component, State: availabilityOperational, Resources: collector.dockerResources(requestCtx, *endpoint, container.ID)}
+	}
+	return states
+}
+
+type dockerContainer struct {
+	ID     string            `json:"Id"`
+	Names  []string          `json:"Names"`
+	State  string            `json:"State"`
+	Labels map[string]string `json:"Labels"`
+}
+
+type dockerStats struct {
+	CPUStats struct {
+		CPUUsage struct {
+			TotalUsage float64 `json:"total_usage"`
+		} `json:"cpu_usage"`
+		SystemCPUUsage float64 `json:"system_cpu_usage"`
+		OnlineCPUs     float64 `json:"online_cpus"`
+	} `json:"cpu_stats"`
+	PreCPUStats struct {
+		CPUUsage struct {
+			TotalUsage float64 `json:"total_usage"`
+		} `json:"cpu_usage"`
+		SystemCPUUsage float64 `json:"system_cpu_usage"`
+	} `json:"precpu_stats"`
+	MemoryStats struct {
+		Usage float64            `json:"usage"`
+		Limit float64            `json:"limit"`
+		Stats map[string]float64 `json:"stats"`
+	} `json:"memory_stats"`
+	Networks map[string]json.RawMessage `json:"networks"`
+}
+
+func unavailableContainers() map[string]containerStatus {
+	return map[string]containerStatus{
+		"Web":      {Name: "Web", State: availabilityUnavailable, Resources: availabilityUnavailable},
+		"API":      {Name: "API", State: availabilityUnavailable, Resources: availabilityUnavailable},
+		"Database": {Name: "Database", State: availabilityUnavailable, Resources: availabilityUnavailable},
+		"Cache":    {Name: "Cache", State: availabilityUnavailable, Resources: availabilityUnavailable},
+	}
+}
+
+func (collector productionStatusCollector) dockerResources(ctx context.Context, endpoint url.URL, id string) availability {
+	endpoint.Path = "/containers/" + url.PathEscape(id) + "/stats"
+	endpoint.RawQuery = "stream=false"
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return availabilityUnavailable
+	}
+	response, err := collector.httpClient.Do(request)
+	if err != nil || response.StatusCode != http.StatusOK {
+		if response != nil {
+			response.Body.Close()
+		}
+		return availabilityUnavailable
+	}
+	defer response.Body.Close()
+	var stats dockerStats
+	if json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&stats) != nil {
+		return availabilityUnavailable
+	}
+	return dockerResourceAvailability(stats)
+}
+
+func dockerResourceAvailability(stats dockerStats) availability {
+	if len(stats.Networks) == 0 || stats.MemoryStats.Limit <= 0 {
+		return availabilityUnavailable
+	}
+	memoryUsage := stats.MemoryStats.Usage - stats.MemoryStats.Stats["cache"]
+	if memoryUsage < 0 {
+		memoryUsage = stats.MemoryStats.Usage
+	}
+	if memoryUsage/stats.MemoryStats.Limit >= .85 {
+		return availabilityDegraded
+	}
+	cpuDelta := stats.CPUStats.CPUUsage.TotalUsage - stats.PreCPUStats.CPUUsage.TotalUsage
+	systemDelta := stats.CPUStats.SystemCPUUsage - stats.PreCPUStats.SystemCPUUsage
+	if cpuDelta < 0 || systemDelta <= 0 {
+		return availabilityUnavailable
+	}
+	cpus := stats.CPUStats.OnlineCPUs
+	if cpus <= 0 {
+		cpus = 1
+	}
+	if (cpuDelta/systemDelta)*cpus*100 >= 85 {
+		return availabilityDegraded
+	}
+	return availabilityOperational
+}
+
+func dockerComponent(labels map[string]string, names []string) string {
+	service := labels["com.docker.compose.service"]
+	if service == "" && len(names) > 0 {
+		service = strings.TrimPrefix(names[0], "/kagari-")
+		service = strings.TrimSuffix(service, "-1")
+	}
+	switch service {
+	case "frontend":
+		return "Web"
+	case "backend":
+		return "API"
+	case "mysql":
+		return "Database"
+	case "redis":
+		return "Cache"
+	default:
+		return ""
+	}
 }
 
 type admin struct {
@@ -176,6 +648,7 @@ type appServices struct {
 	administrators adminRepository
 	config         configRepository
 	sessions       sessionRepository
+	status         *serviceStatusService
 	ttl            time.Duration
 	cookieDomain   string
 	corsOrigin     string
@@ -195,12 +668,17 @@ func newApp(dependencies []dependency, services ...appServices) *fiber.App {
 
 	service := services[0]
 	app.Use(cors.New(cors.Config{AllowOrigins: service.corsOrigin, AllowMethods: "GET,POST,PUT,DELETE,OPTIONS", AllowHeaders: "Content-Type", AllowCredentials: true}))
+	app.Get("/api/v1/service-status", service.serviceStatus)
 	app.Post("/api/v1/admin/session", service.login)
 	app.Delete("/api/v1/admin/session", service.logout)
 	app.Get("/api/v1/admin/session", service.requireSession(service.sessionStatus))
 	app.Get("/api/v1/admin/site-config", service.requireSession(service.getSiteConfig))
 	app.Put("/api/v1/admin/site-config", service.requireSession(service.putSiteConfig))
 	return app
+}
+
+func (service appServices) serviceStatus(c *fiber.Ctx) error {
+	return c.JSON(service.status.current(c.Context()))
 }
 
 func healthHandler(dependencies []dependency) fiber.Handler {
@@ -361,9 +839,32 @@ func main() {
 
 	services := appServices{administrators: administrators, config: gormConfigRepository{db: db}, sessions: redisSessionRepository{client: client}, ttl: sessionTTL(), cookieDomain: cookieDomain(), corsOrigin: corsOrigin()}
 	dependencies := []dependency{databaseDependency{db: db}, redisDependency{client: client}}
+	statusContext, cancelStatus := context.WithCancel(context.Background())
+	defer cancelStatus()
+	services.status = &serviceStatusService{
+		collector: productionStatusCollector{
+			mysql:          dependencies[0],
+			redis:          dependencies[1],
+			dockerURL:      environmentOrDefault("DOCKER_PROXY_URL", "http://docker-proxy:2375"),
+			hostMetricsURL: environmentOrDefault("HOST_METRICS_URL", "http://host-metrics:8090"),
+			httpURL:        environmentOrDefault("STATUS_HTTP_URL", "http://frontend:3000/"),
+			httpClient:     &http.Client{Timeout: 5 * time.Second},
+			requestTimeout: 3 * time.Second,
+		},
+		cache: redisStatusCache{client: client},
+		ttl:   time.Minute,
+	}
+	services.status.start(statusContext)
 	if err := newApp(dependencies, services).Listen(":" + port); err != nil {
 		panic(err)
 	}
+}
+
+func environmentOrDefault(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
 }
 
 func redisDatabaseFromEnvironment() (int, error) {

@@ -1,3 +1,5 @@
+name: kagari
+
 services:
   frontend:
     build:
@@ -15,6 +17,10 @@ services:
   backend:
     build:
       context: ./backend
+      target: api
+    read_only: true
+    tmpfs:
+      - /tmp
     environment:
       APP_PORT: "8080"
       MYSQL_DSN: ${MYSQL_DSN:?MYSQL_DSN is required}
@@ -26,7 +32,18 @@ services:
       SESSION_TTL: ${SESSION_TTL:-24h}
       CORS_ORIGIN: ${CORS_ORIGIN:?CORS_ORIGIN is required}
       COOKIE_DOMAIN: ${COOKIE_DOMAIN:?COOKIE_DOMAIN is required}
+      DOCKER_PROXY_URL: ${DOCKER_PROXY_URL:-http://docker-proxy:2375}
+      HOST_METRICS_URL: ${HOST_METRICS_URL:-http://host-metrics:8090}
+      STATUS_HTTP_URL: ${STATUS_HTTP_URL:-http://frontend:3000/}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     depends_on:
+      host-metrics:
+        condition: service_started
+      docker-proxy:
+        condition: service_started
       mysql:
         condition: service_healthy
       redis:
@@ -41,6 +58,35 @@ services:
       start_period: 10s
     networks:
       - edge
+      - private
+
+  host-metrics:
+    build:
+      context: ./backend
+      target: host-metrics
+    read_only: true
+    volumes:
+      - /proc:/host/proc:ro
+      - /proc/1/root:/host-root:ro
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
+      - private
+
+  docker-proxy:
+    image: tecnativa/docker-socket-proxy@sha256:1f5038b54f06c3e18422902cf00ba21803d1c97805aae032e5e6673d532d3459
+    environment:
+      CONTAINERS: "1"
+      POST: "0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    networks:
       - private
 
   mysql:

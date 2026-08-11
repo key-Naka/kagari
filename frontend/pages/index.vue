@@ -8,6 +8,7 @@
         <NuxtLink class="rounded-full border border-zinc-700 px-5 py-3 hover:border-zinc-300" to="/works">作品</NuxtLink>
         <NuxtLink class="rounded-full border border-zinc-700 px-5 py-3 hover:border-zinc-300" to="/blog">博客</NuxtLink>
         <NuxtLink class="rounded-full border border-zinc-700 px-5 py-3 hover:border-zinc-300" to="/music">音乐</NuxtLink>
+        <NuxtLink class="rounded-full border border-zinc-700 px-5 py-3 hover:border-zinc-300" to="/status">服务状态</NuxtLink>
         <NuxtLink class="rounded-full border border-zinc-700 px-5 py-3 hover:border-zinc-300" to="/admin">Administration Console</NuxtLink>
       </nav>
     </div>
