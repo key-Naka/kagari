@@ -413,7 +413,7 @@ func (collector productionStatusCollector) docker(ctx context.Context) map[strin
 			states[component] = containerStatus{Name: component, State: availabilityDegraded, Resources: availabilityUnavailable}
 			continue
 		}
-		states[component] = containerStatus{Name: component, State: availabilityOperational, Resources: collector.dockerResources(requestCtx, *endpoint, container.ID)}
+		states[component] = containerStatus{Name: component, State: availabilityOperational, Resources: collector.dockerResources(ctx, *endpoint, container.ID)}
 	}
 	return states
 }
@@ -459,7 +459,9 @@ func unavailableContainers() map[string]containerStatus {
 func (collector productionStatusCollector) dockerResources(ctx context.Context, endpoint url.URL, id string) availability {
 	endpoint.Path = "/containers/" + url.PathEscape(id) + "/stats"
 	endpoint.RawQuery = "stream=false"
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	requestCtx, cancel := context.WithTimeout(ctx, collector.requestTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
 		return availabilityUnavailable
 	}

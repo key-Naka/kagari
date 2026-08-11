@@ -334,6 +334,31 @@ func TestProductionStatusCollectorSanitizesProxyFailuresAndDockerStats(t *testin
 			}
 		}
 	})
+
+	t.Run("container statistics receive independent timeouts", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			switch request.URL.Path {
+			case "/containers/json":
+				_, _ = writer.Write([]byte(`[
+					{"Id":"web","State":"running","Labels":{"com.docker.compose.service":"frontend"}},
+					{"Id":"api","State":"running","Labels":{"com.docker.compose.service":"backend"}},
+					{"Id":"database","State":"running","Labels":{"com.docker.compose.service":"mysql"}},
+					{"Id":"cache","State":"running","Labels":{"com.docker.compose.service":"redis"}}
+				]`))
+			default:
+				time.Sleep(35 * time.Millisecond)
+				_, _ = writer.Write([]byte(`{"cpu_stats":{"cpu_usage":{"total_usage":850},"system_cpu_usage":1000,"online_cpus":1},"precpu_stats":{"cpu_usage":{"total_usage":0},"system_cpu_usage":0},"memory_stats":{"usage":10,"limit":100},"networks":{"eth0":{}}}`))
+			}
+		}))
+		defer server.Close()
+
+		collector := productionStatusCollector{dockerURL: server.URL, httpClient: server.Client(), requestTimeout: 90 * time.Millisecond}
+		for _, container := range collector.docker(context.Background()) {
+			if container.Resources != availabilityDegraded {
+				t.Errorf("container %q resources = %q, want %q", container.Name, container.Resources, availabilityDegraded)
+			}
+		}
+	})
 }
 
 func TestServiceStatus(t *testing.T) {

@@ -67,7 +67,7 @@ services:
     read_only: true
     volumes:
       - /proc:/host/proc:ro
-      - /proc/1/root:/host-root:ro
+      - /:/host-root:ro
     security_opt:
       - no-new-privileges:true
     cap_drop:
