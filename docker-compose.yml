@@ -35,6 +35,11 @@ services:
       DOCKER_PROXY_URL: ${DOCKER_PROXY_URL:-http://docker-proxy:2375}
       HOST_METRICS_URL: ${HOST_METRICS_URL:-http://host-metrics:8090}
       STATUS_HTTP_URL: ${STATUS_HTTP_URL:-http://frontend:3000/}
+      QINIU_ACCESS_KEY: ${QINIU_ACCESS_KEY:?QINIU_ACCESS_KEY is required}
+      QINIU_SECRET_KEY: ${QINIU_SECRET_KEY:?QINIU_SECRET_KEY is required}
+      QINIU_BUCKET: ${QINIU_BUCKET:?QINIU_BUCKET is required}
+      QINIU_PUBLIC_BASE_URL: ${QINIU_PUBLIC_BASE_URL:?QINIU_PUBLIC_BASE_URL is required}
+      QINIU_UPLOAD_URL: ${QINIU_UPLOAD_URL:?QINIU_UPLOAD_URL is required}
     security_opt:
       - no-new-privileges:true
     cap_drop:

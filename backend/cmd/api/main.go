@@ -652,6 +652,7 @@ type appServices struct {
 	sessions       sessionRepository
 	projects       projectRepository
 	posts          postRepository
+	media          *mediaService
 	status         *serviceStatusService
 	github         *githubActivityService
 	ttl            time.Duration
@@ -694,6 +695,10 @@ func newApp(dependencies []dependency, services ...appServices) *fiber.App {
 	app.Post("/api/v1/admin/posts", service.requireSession(service.createPost))
 	app.Put("/api/v1/admin/posts/:id", service.requireSession(service.updatePost))
 	app.Delete("/api/v1/admin/posts/:id", service.requireSession(service.deletePost))
+	if service.media != nil {
+		app.Post("/api/v1/admin/media/upload-credentials", service.requireSession(service.media.uploadCredentials))
+		app.Post("/api/v1/admin/media", service.requireSession(service.media.register))
+	}
 	return app
 }
 
@@ -848,7 +853,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	if err := db.AutoMigrate(&admin{}, &siteConfig{}, &portfolioProject{}, &blogPost{}); err != nil {
+	if err := db.AutoMigrate(&admin{}, &siteConfig{}, &portfolioProject{}, &blogPost{}, &mediaRecord{}); err != nil {
 		panic(err)
 	}
 	redisDB, err := redisDatabaseFromEnvironment()
@@ -861,7 +866,11 @@ func main() {
 		panic(err)
 	}
 
-	services := appServices{administrators: administrators, config: gormConfigRepository{db: db}, sessions: redisSessionRepository{client: client}, projects: gormProjectRepository{db: db}, posts: gormPostRepository{db: db}, ttl: sessionTTL(), cookieDomain: cookieDomain(), corsOrigin: corsOrigin()}
+	media, err := mediaServiceFromEnvironment(db)
+	if err != nil {
+		panic(err)
+	}
+	services := appServices{administrators: administrators, config: gormConfigRepository{db: db}, sessions: redisSessionRepository{client: client}, projects: gormProjectRepository{db: db}, posts: gormPostRepository{db: db}, media: media, ttl: sessionTTL(), cookieDomain: cookieDomain(), corsOrigin: corsOrigin()}
 	dependencies := []dependency{databaseDependency{db: db}, redisDependency{client: client}}
 	statusContext, cancelStatus := context.WithCancel(context.Background())
 	defer cancelStatus()
