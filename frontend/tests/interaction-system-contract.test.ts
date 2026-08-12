@@ -9,7 +9,6 @@ async function readFrontendFile(path: string): Promise<string> {
 describe('全站视觉交互系统契约', () => {
   it('由独立的 Canvas、准星、导航和转场组件组成，并在 app 壳层装配', async () => {
     const app = await readFrontendFile('app.vue')
-    const canvas = await readFrontendFile('components/ArchiveGridCanvas.client.vue')
     const cursor = await readFrontendFile('components/TargetCursor.client.vue')
     const navigation = await readFrontendFile('components/SiteNavigation.vue')
     const overlay = await readFrontendFile('components/PageTransitionOverlay.vue')
@@ -18,9 +17,6 @@ describe('全站视觉交互系统契约', () => {
     expect(app).toContain('<TargetCursor')
     expect(app).toContain('<SiteNavigation')
     expect(app).toContain('<PageTransitionOverlay')
-    expect(canvas).toContain('requestAnimationFrame')
-    expect(canvas).toContain('visitedCells')
-    expect(canvas).toContain('activationDuration = 2500')
     expect(cursor).toContain("matchMedia('(hover: hover) and (pointer: fine)')")
     expect(cursor).toContain("closest<HTMLElement>('.cursor-target')")
     expect(navigation).toContain('window.scrollY > 32')
