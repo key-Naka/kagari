@@ -46,6 +46,67 @@ async function canvasPixelSummary(page: Page): Promise<{
   })
 }
 
+async function rotationDegrees(page: Page): Promise<number> {
+  return page.locator('.target-cursor__ring').evaluate((element) => {
+    const matrix = new DOMMatrixReadOnly(getComputedStyle(element).transform)
+    const degrees = Math.atan2(matrix.b, matrix.a) * 180 / Math.PI
+    return degrees < 0 ? degrees + 360 : degrees
+  })
+}
+
+function clockwiseDelta(from: number, to: number): number {
+  return (to - from + 360) % 360
+}
+
+async function cursorPoint(page: Page): Promise<{ x: number; y: number }> {
+  return page.getByTestId('target-cursor').evaluate((element) => {
+    const bounds = element.getBoundingClientRect()
+    return {
+      x: bounds.left,
+      y: bounds.top,
+    }
+  })
+}
+
+async function centerDotScale(page: Page): Promise<number> {
+  return page.locator('.target-cursor__dot').evaluate((element) => {
+    return new DOMMatrixReadOnly(getComputedStyle(element).transform).a
+  })
+}
+
+async function cornerAnchorPoints(page: Page): Promise<Record<string, { x: number; y: number }>> {
+  return page.locator('[data-cursor-corner]').evaluateAll((elements) => Object.fromEntries(
+    elements.map((element) => {
+      const bounds = element.getBoundingClientRect()
+      const name = (element as HTMLElement).dataset.cursorCorner ?? ''
+      return [
+        name,
+        {
+          x: bounds.left + bounds.width / 2,
+          y: bounds.top + bounds.height / 2,
+        },
+      ]
+    }),
+  ))
+}
+
+async function cornerElbowOffsets(page: Page): Promise<Record<string, { x: number; y: number }>> {
+  return page.locator('[data-cursor-corner]').evaluateAll((elements) => Object.fromEntries(
+    elements.map((element) => {
+      const name = (element as HTMLElement).dataset.cursorCorner ?? ''
+      const mark = element.querySelector<HTMLElement>('.target-cursor__corner-mark')
+      if (!mark) {
+        return [name, { x: Number.NaN, y: Number.NaN }]
+      }
+      const matrix = new DOMMatrixReadOnly(getComputedStyle(mark).transform)
+      const localX = name.includes('right') ? mark.offsetWidth : 0
+      const localY = name.includes('bottom') ? mark.offsetHeight : 0
+      const point = new DOMPoint(localX, localY).matrixTransform(matrix)
+      return [name, { x: point.x, y: point.y }]
+    }),
+  ))
+}
+
 test.describe('全站视觉交互系统', () => {
   test('桌面 Canvas 淡出后可重复激活，并在空闲时休眠', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'desktop', '仅在桌面条件下验证 Canvas。')
@@ -102,6 +163,8 @@ test.describe('全站视觉交互系统', () => {
     await waitForInteractionSystem(page)
 
     const canvas = page.getByTestId('archive-grid-canvas')
+    await expect(page.getByTestId('target-cursor')).toHaveCount(0)
+    await expect(page.locator('html')).not.toHaveClass(/kagari-target-cursor/)
     await expect(canvas).toHaveAttribute('data-render-state', 'static')
     const staticPixels = await canvasPixelSummary(page)
     expect(staticPixels.visiblePixels).toBeGreaterThan(0)
@@ -111,26 +174,176 @@ test.describe('全站视觉交互系统', () => {
     await expect(canvas).toHaveAttribute('data-activation-count', '0')
     await expect(canvas).toHaveAttribute('data-active-count', '0')
     expect((await canvasPixelSummary(page)).purplePixels).toBe(0)
+
+    await page.emulateMedia({ reducedMotion: 'no-preference' })
+    await expect(page.getByTestId('target-cursor')).toBeVisible()
+    await expect(page.locator('html')).toHaveClass(/kagari-target-cursor/)
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await expect(page.getByTestId('target-cursor')).toHaveCount(0)
+    await expect(page.locator('html')).not.toHaveClass(/kagari-target-cursor/)
+    const restoredCursorStyles = await page.evaluate(() => ({
+      body: getComputedStyle(document.body).cursor,
+      link: getComputedStyle(document.querySelector('.site-navigation__route')!).cursor,
+    }))
+    expect(restoredCursorStyles.body).not.toBe('none')
+    expect(restoredCursorStyles.link).not.toBe('none')
   })
 
-  test('桌面导航滚动收紧且准星锁定真实目标', async ({ page }, testInfo) => {
+  test('桌面 Target Cursor 隐藏系统指针，保持旋转相位并独立锁定四角', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'desktop', '仅在桌面条件下验证导航与准星。')
     await page.goto('/')
     await waitForInteractionSystem(page)
 
-    const navigation = page.getByTestId('site-navigation')
-    await page.evaluate(() => window.scrollTo(0, 80))
-    await expect(navigation).toHaveClass(/site-navigation--compact/)
+    const cursor = page.getByTestId('target-cursor')
+    await expect(cursor).toBeVisible()
+    await expect(page.locator('html')).toHaveClass(/kagari-target-cursor/)
+    const cursorStyles = await page.evaluate(() => ({
+      body: getComputedStyle(document.body).cursor,
+      link: getComputedStyle(document.querySelector('.site-navigation__route')!).cursor,
+      label: getComputedStyle(document.querySelector('.site-navigation__label')!).cursor,
+    }))
+    expect(cursorStyles).toEqual({ body: 'none', link: 'none', label: 'none' })
+
+    await page.mouse.move(160, 420)
+    await expect.poll(async () => (await cursorPoint(page)).x).toBeCloseTo(160, 0)
+    const followStartedAt = Date.now()
+    await page.mouse.move(320, 420)
+    await expect.poll(async () => (await cursorPoint(page)).x, {
+      intervals: [20],
+      timeout: 300,
+    }).toBeCloseTo(320, 0)
+    expect(Date.now() - followStartedAt).toBeLessThan(300)
+
+    const freeRotation = await rotationDegrees(page)
+    await page.waitForTimeout(260)
+    const laterFreeRotation = await rotationDegrees(page)
+    const rotationDelta = clockwiseDelta(freeRotation, laterFreeRotation)
+    expect(rotationDelta).toBeGreaterThan(35)
+    expect(rotationDelta).toBeLessThan(60)
 
     const musicLink = page.getByRole('link', { name: '音乐' }).first()
+    await page.evaluate(() => {
+      document.addEventListener('pointerover', (event) => {
+        const target = (event.target as Element | null)?.closest('.cursor-target')
+        if (!target) {
+          return
+        }
+        const ring = document.querySelector<HTMLElement>('.target-cursor__ring')
+        if (!ring) {
+          return
+        }
+        const matrix = new DOMMatrixReadOnly(getComputedStyle(ring).transform)
+        const degrees = Math.atan2(matrix.b, matrix.a) * 180 / Math.PI
+        ;(window as Window & { __cursorEntryRotation?: number }).__cursorEntryRotation =
+          degrees < 0 ? degrees + 360 : degrees
+      }, { capture: true, once: true })
+    })
     await musicLink.hover()
-    const cursor = page.getByTestId('target-cursor')
     await expect(cursor).toHaveAttribute('data-locked', 'true')
-    await page.waitForTimeout(200)
+    await page.waitForTimeout(260)
+
+    const lockedRotation = await rotationDegrees(page)
+    const entryRotation = await page.evaluate(
+      () => (window as Window & { __cursorEntryRotation?: number }).__cursorEntryRotation,
+    )
+    expect(entryRotation).toBeDefined()
+    expect(clockwiseDelta(entryRotation ?? 0, lockedRotation)).toBeLessThan(1)
+    await page.waitForTimeout(180)
+    expect(await rotationDegrees(page)).toBeCloseTo(lockedRotation, 0)
+
     const targetBox = await musicLink.boundingBox()
-    const cursorBox = await cursor.boundingBox()
-    expect(cursorBox?.width).toBeCloseTo(targetBox?.width ?? 0, 0)
-    expect(cursorBox?.height).toBeCloseTo(targetBox?.height ?? 0, 0)
+    expect(targetBox).not.toBeNull()
+    const lockedCorners = await cornerAnchorPoints(page)
+    const expectedCorners = {
+      'top-left': { x: (targetBox?.x ?? 0) - 3, y: (targetBox?.y ?? 0) - 3 },
+      'top-right': {
+        x: (targetBox?.x ?? 0) + (targetBox?.width ?? 0) + 3,
+        y: (targetBox?.y ?? 0) - 3,
+      },
+      'bottom-right': {
+        x: (targetBox?.x ?? 0) + (targetBox?.width ?? 0) + 3,
+        y: (targetBox?.y ?? 0) + (targetBox?.height ?? 0) + 3,
+      },
+      'bottom-left': {
+        x: (targetBox?.x ?? 0) - 3,
+        y: (targetBox?.y ?? 0) + (targetBox?.height ?? 0) + 3,
+      },
+    }
+    for (const [name, expected] of Object.entries(expectedCorners)) {
+      expect(lockedCorners[name]?.x).toBeCloseTo(expected.x, 0)
+      expect(lockedCorners[name]?.y).toBeCloseTo(expected.y, 0)
+    }
+    const elbowOffsets = await cornerElbowOffsets(page)
+    for (const offset of Object.values(elbowOffsets)) {
+      expect(offset.x).toBeCloseTo(0, 5)
+      expect(offset.y).toBeCloseTo(0, 5)
+    }
+    const cornerSizes = await page.locator('.target-cursor__corner-mark').evaluateAll(
+      marks => marks.map(mark => ({
+        width: (mark as HTMLElement).offsetWidth,
+        height: (mark as HTMLElement).offsetHeight,
+      })),
+    )
+    expect(cornerSizes).toEqual(Array.from({ length: 4 }, () => ({ width: 12, height: 12 })))
+
+    const initialLeft = lockedCorners['top-left']?.x ?? 0
+    await musicLink.evaluate((element) => {
+      const width = element.getBoundingClientRect().width
+      element.style.flex = '0 0 auto'
+      element.style.width = `${width + 40}px`
+    })
+    const resizedTarget = await musicLink.boundingBox()
+    expect(resizedTarget?.width).toBeGreaterThan((targetBox?.width ?? 0) + 30)
+    await expect.poll(async () => (await cornerAnchorPoints(page))['top-right']?.x ?? 0)
+      .toBeCloseTo((resizedTarget?.x ?? 0) + (resizedTarget?.width ?? 0) + 3, 0)
+    const resizedCorners = await cornerAnchorPoints(page)
+    expect(resizedCorners['top-left']?.x).not.toBeCloseTo(initialLeft, 0)
+    expect(resizedCorners['top-left']?.x).toBeCloseTo((resizedTarget?.x ?? 0) - 3, 0)
+    expect(resizedCorners['top-right']?.x).toBeCloseTo(
+      (resizedTarget?.x ?? 0) + (resizedTarget?.width ?? 0) + 3,
+      0,
+    )
+
+    const beforeViewportResizeLeft = resizedCorners['top-left']?.x ?? 0
+    await page.setViewportSize({ width: 1400, height: 720 })
+    await expect.poll(async () => (await cornerAnchorPoints(page))['top-left']?.x ?? 0)
+      .not.toBeCloseTo(beforeViewportResizeLeft, 0)
+    const viewportResizedTarget = await musicLink.boundingBox()
+    const viewportResizedCorners = await cornerAnchorPoints(page)
+    expect(viewportResizedCorners['top-left']?.x).toBeCloseTo((viewportResizedTarget?.x ?? 0) - 3, 0)
+
+    const beforeScrollTop = lockedCorners['top-left']?.y ?? 0
+    await page.evaluate(() => window.scrollTo(0, 80))
+    await expect(page.getByTestId('site-navigation')).toHaveClass(/site-navigation--compact/)
+    await expect.poll(async () => (await cornerAnchorPoints(page))['top-left']?.y ?? 0)
+      .not.toBeCloseTo(beforeScrollTop, 0)
+    await expect.poll(async () => page.evaluate(() => {
+      const target = document.querySelector<HTMLElement>('.site-navigation__route[href="/music"]')
+      const corner = document.querySelector<HTMLElement>('[data-cursor-corner="top-left"]')
+      if (!target || !corner) {
+        return Number.POSITIVE_INFINITY
+      }
+      const targetBounds = target.getBoundingClientRect()
+      const cornerBounds = corner.getBoundingClientRect()
+      const cornerY = cornerBounds.top + cornerBounds.height / 2
+      return Math.abs(cornerY - (targetBounds.top - 3))
+    })).toBeLessThan(0.5)
+
+    await page.mouse.down()
+    await expect.poll(async () => centerDotScale(page)).toBeLessThan(0.8)
+    await page.mouse.up()
+    await expect.poll(async () => centerDotScale(page)).toBeCloseTo(1, 5)
+
+    await page.mouse.move(320, 520)
+    await expect(cursor).toHaveAttribute('data-locked', 'false')
+    const resumedRotation = await rotationDegrees(page)
+    await page.waitForTimeout(260)
+    expect(Math.abs(await rotationDegrees(page) - resumedRotation)).toBeGreaterThan(20)
+
+    await page.goto('/admin/login')
+    await expect(page.getByTestId('target-cursor')).toHaveCount(0)
+    await expect(page.locator('html')).not.toHaveClass(/kagari-target-cursor/)
+    expect(await page.evaluate(() => getComputedStyle(document.body).cursor)).not.toBe('none')
   })
 
   test('桌面路由和浏览器后退都会经过统一遮罩转场', async ({ page }, testInfo) => {
@@ -164,6 +377,7 @@ test.describe('全站视觉交互系统', () => {
     await waitForInteractionSystem(page)
 
     await expect(page.getByTestId('target-cursor')).toHaveCount(0)
+    await expect(page.locator('html')).not.toHaveClass(/kagari-target-cursor/)
     const noHorizontalOverflow = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)
     expect(noHorizontalOverflow).toBe(true)
     const trigger = page.getByRole('button', { name: '打开全部导航' })
