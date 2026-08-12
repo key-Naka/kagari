@@ -10,27 +10,21 @@ const route = useRoute()
 const compact = ref(false)
 const menuOpen = ref(false)
 const pendingRoute = ref<string | null>(null)
-const navigationRoot = ref<HTMLElement | null>(null)
 const menu = ref<HTMLElement | null>(null)
 const closeButton = ref<HTMLButtonElement | null>(null)
 const menuTrigger = ref<HTMLElement | null>(null)
 const sigil = ref<HTMLElement | null>(null)
 let bodyOverflow = ''
-let removeLiquidListeners: (() => void)[] = []
 let rotateSigil: ((target: HTMLElement) => void) | null = null
 let isMounted = false
 
-const primaryRoutes: NavigationItem[] = [
+const publicRoutes: NavigationItem[] = [
   { label: '首页', to: '/' },
   { label: '作品', to: '/works' },
   { label: '博客', to: '/blog' },
   { label: '音乐', to: '/music' },
   { label: '相册', to: '/gallery' },
   { label: 'GitHub', to: '/github' },
-]
-
-const indexRoutes: NavigationItem[] = [
-  ...primaryRoutes,
   { label: '服务状态', to: '/status' },
   { label: '访客留言', to: '/visitor-messages' },
 ]
@@ -156,21 +150,6 @@ onMounted(async () => {
       ease: 'power2.out',
     })
   }
-  const links = navigationRoot.value?.querySelectorAll<HTMLElement>('.site-navigation__route') ?? []
-  for (const link of links) {
-    const fill = link.querySelector<HTMLElement>('[data-liquid-fill]')
-    if (!fill) {
-      continue
-    }
-    const enter = () => gsap.to(fill, { yPercent: 0, duration: 0.34, ease: 'power3.out' })
-    const leave = () => gsap.to(fill, { yPercent: 120, duration: 0.3, ease: 'power2.in' })
-    link.addEventListener('mouseenter', enter)
-    link.addEventListener('mouseleave', leave)
-    removeLiquidListeners.push(() => {
-      link.removeEventListener('mouseenter', enter)
-      link.removeEventListener('mouseleave', leave)
-    })
-  }
 })
 
 onBeforeUnmount(() => {
@@ -179,20 +158,16 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onMenuKeydown)
   window.removeEventListener('kagari:navigation', glowSigil)
   document.body.style.overflow = bodyOverflow
-  removeLiquidListeners.forEach(remove => remove())
-  removeLiquidListeners = []
 })
 </script>
 
 <template>
   <header
-    ref="navigationRoot"
     class="site-navigation"
     :class="{ 'site-navigation--compact': compact }"
     data-testid="site-navigation"
   >
     <NuxtLink
-      ref="sigil"
       to="/"
       class="site-navigation__sigil cursor-target"
       aria-label="返回首页"
@@ -205,7 +180,7 @@ onBeforeUnmount(() => {
 
     <nav class="site-navigation__routes" aria-label="主导航">
       <NuxtLink
-        v-for="item in primaryRoutes"
+        v-for="item in publicRoutes"
         :key="item.to"
         :to="item.to"
         class="site-navigation__route cursor-target"
@@ -216,17 +191,6 @@ onBeforeUnmount(() => {
         <span class="site-navigation__label">{{ item.label }}</span>
         <span v-if="isActive(item)" class="site-navigation__active-sigil" aria-hidden="true" />
       </NuxtLink>
-      <button
-        type="button"
-        class="site-navigation__more cursor-target"
-        aria-label="打开更多导航"
-        title="更多导航"
-        :aria-expanded="menuOpen"
-        aria-controls="ritual-menu"
-        @click="openMenu"
-      >
-        <span aria-hidden="true">...</span>
-      </button>
     </nav>
 
     <button
@@ -269,7 +233,7 @@ onBeforeUnmount(() => {
       </button>
       <nav class="ritual-menu__routes" aria-label="全部公开路由">
         <NuxtLink
-          v-for="item in indexRoutes"
+          v-for="item in publicRoutes"
           :key="item.to"
           :to="item.to"
           class="ritual-menu__route cursor-target"
@@ -338,8 +302,7 @@ onBeforeUnmount(() => {
   backdrop-filter: blur(18px);
 }
 
-.site-navigation__route,
-.site-navigation__more {
+.site-navigation__route {
   position: relative;
   display: grid;
   min-width: 3.6rem;
@@ -356,11 +319,8 @@ onBeforeUnmount(() => {
   cursor: pointer;
 }
 
-.site-navigation__route:hover,
-.site-navigation__route:focus-visible,
-.site-navigation__route--active,
-.site-navigation__more:hover,
-.site-navigation__more:focus-visible {
+.site-navigation__route:not(.site-navigation__route--active):hover,
+.site-navigation__route:not(.site-navigation__route--active):focus-visible {
   color: #111113;
   outline: none;
 }
@@ -376,8 +336,7 @@ onBeforeUnmount(() => {
   color: #f2efe7;
 }
 
-.site-navigation__label,
-.site-navigation__more > span {
+.site-navigation__label {
   position: relative;
   z-index: 1;
 }
@@ -389,6 +348,12 @@ onBeforeUnmount(() => {
   border-radius: inherit;
   background: #dedad1;
   transform: translateY(120%);
+  transition: transform 340ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.site-navigation__route:not(.site-navigation__route--active):hover .site-navigation__liquid,
+.site-navigation__route:not(.site-navigation__route--active):focus-visible .site-navigation__liquid {
+  transform: translateY(0);
 }
 
 .site-navigation__route--active .site-navigation__liquid {
@@ -506,12 +471,11 @@ onBeforeUnmount(() => {
 }
 
 .site-navigation__route:focus-visible,
-.site-navigation__more:focus-visible,
 .ritual-menu__route:focus-visible {
   box-shadow: 0 0 0 2px #d9bf81;
 }
 
-@media (max-width: 860px) {
+@media (max-width: 1119px), (hover: none), (pointer: coarse) {
   .site-navigation {
     width: calc(100% - 2rem);
   }
@@ -534,6 +498,7 @@ onBeforeUnmount(() => {
   .site-navigation,
   .ritual-menu,
   .site-navigation__route,
+  .site-navigation__liquid,
   .ritual-menu__route {
     transition-duration: 1ms;
   }

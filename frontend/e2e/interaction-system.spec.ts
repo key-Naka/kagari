@@ -1,5 +1,16 @@
 import { expect, test, type Page } from '@playwright/test'
 
+const publicRoutes = [
+  { label: '首页', path: '/' },
+  { label: '作品', path: '/works' },
+  { label: '博客', path: '/blog' },
+  { label: '音乐', path: '/music' },
+  { label: '相册', path: '/gallery' },
+  { label: 'GitHub', path: '/github' },
+  { label: '服务状态', path: '/status' },
+  { label: '访客留言', path: '/visitor-messages' },
+]
+
 async function waitForInteractionSystem(page: Page): Promise<void> {
   await expect(page.getByTestId('archive-grid-canvas')).toBeVisible({ timeout: 15000 })
 }
@@ -187,6 +198,112 @@ test.describe('全站视觉交互系统', () => {
     }))
     expect(restoredCursorStyles.body).not.toBe('none')
     expect(restoredCursorStyles.link).not.toBe('none')
+  })
+
+  test('桌面导航直接展示八个公开入口并支持新增路由转场', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'desktop', '仅在桌面条件下验证完整导航。')
+    await page.goto('/')
+    await waitForInteractionSystem(page)
+
+    const routes = page.locator('.site-navigation__routes .site-navigation__route')
+    await expect(routes).toHaveCount(publicRoutes.length)
+    await expect(page.locator('.site-navigation__more')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: '打开更多导航' })).toHaveCount(0)
+
+    for (const route of publicRoutes) {
+      const link = page.locator(`.site-navigation__route[href="${route.path}"]`)
+      await expect(link).toBeVisible()
+      await expect(link).toHaveText(route.label)
+    }
+
+    const transition = page.getByTestId('page-transition')
+    await page.locator('.site-navigation__route[href="/status"]').click()
+    await expect(page).toHaveURL(/\/status$/)
+    await expect(transition).toHaveAttribute('data-sequence', '1')
+    await expect(transition).toHaveAttribute('data-phase', 'idle')
+
+    await page.goBack()
+    await expect(page).toHaveURL(/\/$/)
+    await expect(transition).toHaveAttribute('data-phase', 'idle')
+    const sequenceBeforeVisitorRoute = Number(await transition.getAttribute('data-sequence'))
+    await page.locator('.site-navigation__route[href="/visitor-messages"]').click()
+    await expect(page).toHaveURL(/\/visitor-messages$/)
+    await expect.poll(async () => Number(await transition.getAttribute('data-sequence')))
+      .toBeGreaterThan(sequenceBeforeVisitorRoute)
+    await expect(transition).toHaveAttribute('data-phase', 'idle')
+  })
+
+  test('导航悬停、当前态和 reduced motion 下均保持可读', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'desktop', '仅在桌面条件下验证导航视觉状态。')
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await page.goto('/')
+    await waitForInteractionSystem(page)
+
+    const activeRoute = page.locator('.site-navigation__route[href="/"]')
+    await expect(activeRoute).toHaveClass(/site-navigation__route--active/)
+    await expect(activeRoute).toHaveAttribute('aria-current', 'page')
+    await expect(activeRoute.locator('.site-navigation__active-sigil')).toBeVisible()
+    const activeBeforeHover = await activeRoute.evaluate(element => ({
+      color: getComputedStyle(element).color,
+      fill: getComputedStyle(element.querySelector<HTMLElement>('[data-liquid-fill]')!).backgroundColor,
+    }))
+    await activeRoute.hover()
+    expect(await activeRoute.evaluate(element => ({
+      color: getComputedStyle(element).color,
+      fill: getComputedStyle(element.querySelector<HTMLElement>('[data-liquid-fill]')!).backgroundColor,
+    }))).toEqual(activeBeforeHover)
+
+    for (const route of publicRoutes.slice(1)) {
+      const link = page.locator(`.site-navigation__route[href="${route.path}"]`)
+      await link.hover()
+      await expect.poll(async () => link.evaluate((element) => {
+        const fill = element.querySelector<HTMLElement>('[data-liquid-fill]')
+        return fill
+          ? new DOMMatrixReadOnly(getComputedStyle(fill).transform).m42
+          : Number.NaN
+      })).toBeCloseTo(0, 5)
+      const styles = await link.evaluate((element) => {
+        const label = element.querySelector<HTMLElement>('.site-navigation__label')
+        const fill = element.querySelector<HTMLElement>('[data-liquid-fill]')
+        return {
+          color: label ? getComputedStyle(label).color : '',
+          opacity: label ? Number(getComputedStyle(label).opacity) : 0,
+          fillColor: fill ? getComputedStyle(fill).backgroundColor : '',
+        }
+      })
+      expect(styles.color).not.toBe('rgba(0, 0, 0, 0)')
+      expect(styles.opacity).toBeGreaterThan(0)
+      expect(styles.fillColor).not.toBe('rgba(0, 0, 0, 0)')
+    }
+  })
+
+  test('导航在 1120px 以下和宽屏触屏环境切换为 Ritual Mobile Menu', async ({ page, browser }, testInfo) => {
+    test.skip(testInfo.project.name !== 'desktop', '由桌面项目覆盖精确断点与宽屏触屏环境。')
+    await page.setViewportSize({ width: 1121, height: 720 })
+    await page.goto('/')
+    await waitForInteractionSystem(page)
+    await expect(page.locator('.site-navigation__routes')).toBeVisible()
+    await expect(page.getByRole('button', { name: '打开全部导航' })).toBeHidden()
+
+    await page.setViewportSize({ width: 1119, height: 720 })
+    await expect(page.locator('.site-navigation__routes')).toBeHidden()
+    await expect(page.getByRole('button', { name: '打开全部导航' })).toBeVisible()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+
+    const touchContext = await browser.newContext({
+      viewport: { width: 1366, height: 768 },
+      hasTouch: true,
+    })
+    const touchPage = await touchContext.newPage()
+    try {
+      await touchPage.goto('/')
+      await waitForInteractionSystem(touchPage)
+      await expect(touchPage.locator('.site-navigation__routes')).toBeHidden()
+      await expect(touchPage.getByRole('button', { name: '打开全部导航' })).toBeVisible()
+      expect(await touchPage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+    } finally {
+      await touchContext.close()
+    }
   })
 
   test('桌面 Target Cursor 隐藏系统指针，保持旋转相位并独立锁定四角', async ({ page }, testInfo) => {
@@ -384,16 +501,28 @@ test.describe('全站视觉交互系统', () => {
     await trigger.click()
     const menu = page.getByTestId('ritual-menu')
     await expect(menu).toHaveAttribute('data-open', 'true')
+    await expect.poll(async () => page.evaluate(() => document.body.style.overflow)).toBe('hidden')
     await expect(page.getByRole('button', { name: '关闭导航' })).toBeFocused()
 
+    await page.keyboard.press('Shift+Tab')
+    await expect(page.getByRole('link', { name: '访客留言' }).last()).toBeFocused()
+    await page.keyboard.press('Tab')
+    await expect(page.getByRole('button', { name: '关闭导航' })).toBeFocused()
     await page.keyboard.press('Tab')
     await expect(page.getByRole('link', { name: '首页' }).last()).toBeFocused()
     await page.keyboard.press('Escape')
     await expect(menu).toHaveAttribute('data-open', 'false')
     await expect(menu).toHaveAttribute('inert', '')
+    await expect.poll(async () => page.evaluate(() => document.body.style.overflow)).toBe('')
     await expect(trigger).toBeFocused()
     await page.keyboard.press('Tab')
     await expect(page.locator('.ritual-menu__close')).not.toBeFocused()
+
+    await trigger.click()
+    await expect(menu).toHaveAttribute('data-open', 'true')
+    await menu.evaluate(element => (element as HTMLElement).click())
+    await expect(menu).toHaveAttribute('data-open', 'false')
+    await expect(trigger).toBeFocused()
 
     await trigger.click()
     const menuMusicLink = page.getByRole('link', { name: '音乐' }).last()
