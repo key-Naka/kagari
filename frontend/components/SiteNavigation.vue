@@ -64,9 +64,7 @@ function onMenuTransitionEnd(event: TransitionEvent): void {
   pendingRoute.value = null
   if (destination) {
     void navigateTo(destination)
-    return
   }
-  menuTrigger.value?.focus()
 }
 
 function focusableMenuItems(): HTMLElement[] {
@@ -121,6 +119,10 @@ watch(menuOpen, async (isOpen) => {
     return
   }
   document.body.style.overflow = bodyOverflow
+  if (!pendingRoute.value) {
+    await nextTick()
+    menuTrigger.value?.focus()
+  }
 })
 
 onMounted(async () => {
@@ -206,46 +208,48 @@ onBeforeUnmount(() => {
       <span />
     </button>
 
-    <div
-      id="ritual-menu"
-      ref="menu"
-      class="ritual-menu"
-      :class="{ 'ritual-menu--open': menuOpen }"
-      :data-open="menuOpen"
-      data-testid="ritual-menu"
-      aria-label="全部导航"
-      role="dialog"
-      :aria-hidden="!menuOpen"
-      :aria-modal="menuOpen ? 'true' : undefined"
-      :inert="!menuOpen"
-      @click.self="closeMenu"
-      @transitionend="onMenuTransitionEnd"
-    >
-      <button
-        ref="closeButton"
-        type="button"
-        class="ritual-menu__close cursor-target"
-        aria-label="关闭导航"
-        title="关闭导航"
-        @click="closeMenu"
+    <Teleport to="body">
+      <div
+        id="ritual-menu"
+        ref="menu"
+        class="ritual-menu"
+        :class="{ 'ritual-menu--open': menuOpen }"
+        :data-open="menuOpen"
+        data-testid="ritual-menu"
+        aria-label="全部导航"
+        role="dialog"
+        :aria-hidden="!menuOpen"
+        :aria-modal="menuOpen ? 'true' : undefined"
+        :inert="!menuOpen"
+        @click.self="closeMenu"
+        @transitionend="onMenuTransitionEnd"
       >
-        <span aria-hidden="true">+</span>
-      </button>
-      <nav class="ritual-menu__routes" aria-label="全部公开路由">
-        <NuxtLink
-          v-for="item in publicRoutes"
-          :key="item.to"
-          :to="item.to"
-          class="ritual-menu__route cursor-target"
-          :class="{ 'ritual-menu__route--active': isActive(item) }"
-          :aria-current="isActive(item) ? 'page' : undefined"
-          @click.prevent="chooseMenuRoute(item.to)"
+        <button
+          ref="closeButton"
+          type="button"
+          class="ritual-menu__close cursor-target"
+          aria-label="关闭导航"
+          title="关闭导航"
+          @click="closeMenu"
         >
-          <span>{{ item.label }}</span>
-          <small>{{ item.to }}</small>
-        </NuxtLink>
-      </nav>
-    </div>
+          <span aria-hidden="true">+</span>
+        </button>
+        <nav class="ritual-menu__routes" aria-label="全部公开路由">
+          <NuxtLink
+            v-for="item in publicRoutes"
+            :key="item.to"
+            :to="item.to"
+            class="ritual-menu__route cursor-target"
+            :class="{ 'ritual-menu__route--active': isActive(item) }"
+            :aria-current="isActive(item) ? 'page' : undefined"
+            @click.prevent="chooseMenuRoute(item.to)"
+          >
+            <span>{{ item.label }}</span>
+            <small>{{ item.to }}</small>
+          </NuxtLink>
+        </nav>
+      </div>
+    </Teleport>
   </header>
 </template>
 

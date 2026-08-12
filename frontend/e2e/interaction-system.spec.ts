@@ -15,6 +15,24 @@ async function waitForInteractionSystem(page: Page): Promise<void> {
   await expect(page.getByTestId('archive-grid-canvas')).toBeVisible({ timeout: 15000 })
 }
 
+async function expectNavigationClearOfContent(page: Page): Promise<void> {
+  const geometry = await page.evaluate(() => {
+    const navigation = document.querySelector<HTMLElement>('[data-testid="site-navigation"]')
+    const main = document.querySelector<HTMLElement>('main')
+    if (!navigation || !main) {
+      return null
+    }
+    const navigationBounds = navigation.getBoundingClientRect()
+    const mainBounds = main.getBoundingClientRect()
+    return {
+      navigationBottom: navigationBounds.bottom,
+      mainTop: mainBounds.top,
+    }
+  })
+  expect(geometry).not.toBeNull()
+  expect(geometry?.mainTop ?? 0).toBeGreaterThanOrEqual(geometry?.navigationBottom ?? Number.POSITIVE_INFINITY)
+}
+
 async function canvasPixelSummary(page: Page): Promise<{
   visiblePixels: number
   purplePixels: number
@@ -69,6 +87,11 @@ function clockwiseDelta(from: number, to: number): number {
   return (to - from + 360) % 360
 }
 
+function angularDistance(from: number, to: number): number {
+  const delta = Math.abs(from - to) % 360
+  return Math.min(delta, 360 - delta)
+}
+
 async function cursorPoint(page: Page): Promise<{ x: number; y: number }> {
   return page.getByTestId('target-cursor').evaluate((element) => {
     const bounds = element.getBoundingClientRect()
@@ -81,6 +104,12 @@ async function cursorPoint(page: Page): Promise<{ x: number; y: number }> {
 
 async function centerDotScale(page: Page): Promise<number> {
   return page.locator('.target-cursor__dot').evaluate((element) => {
+    return new DOMMatrixReadOnly(getComputedStyle(element).transform).a
+  })
+}
+
+async function cursorScale(page: Page): Promise<number> {
+  return page.getByTestId('target-cursor').evaluate((element) => {
     return new DOMMatrixReadOnly(getComputedStyle(element).transform).a
   })
 }
@@ -200,6 +229,34 @@ test.describe('全站视觉交互系统', () => {
     expect(restoredCursorStyles.link).not.toBe('none')
   })
 
+  test('reduced motion 下菜单与页面转场近乎即时', async ({ page }, testInfo) => {
+    test.skip(testInfo.project.name !== 'desktop', '仅在桌面浏览器中模拟 reduced motion。')
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    await page.setViewportSize({ width: 1119, height: 720 })
+    await page.goto('/')
+    await waitForInteractionSystem(page)
+
+    const trigger = page.getByRole('button', { name: '打开全部导航' })
+    const menu = page.getByTestId('ritual-menu')
+    const transition = page.getByTestId('page-transition')
+    const durations = await page.evaluate(() => ({
+      menu: getComputedStyle(document.querySelector<HTMLElement>('[data-testid="ritual-menu"]')!)
+        .transitionDuration,
+      transition: getComputedStyle(document.querySelector<HTMLElement>('[data-testid="page-transition"]')!)
+        .transitionDuration,
+    }))
+    expect(durations.menu.split(',').every(value => Number.parseFloat(value) <= 0.01)).toBe(true)
+    expect(durations.transition.split(',').every(value => Number.parseFloat(value) <= 0.01)).toBe(true)
+
+    await trigger.click()
+    await expect(menu).toHaveAttribute('data-open', 'true')
+    const startedAt = Date.now()
+    await menu.locator('.ritual-menu__route[href="/music"]').click()
+    await expect(page).toHaveURL(/\/music$/)
+    await expect(transition).toHaveAttribute('data-phase', 'idle')
+    expect(Date.now() - startedAt).toBeLessThan(750)
+  })
+
   test('桌面导航直接展示八个公开入口并支持新增路由转场', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'desktop', '仅在桌面条件下验证完整导航。')
     await page.goto('/')
@@ -284,10 +341,13 @@ test.describe('全站视觉交互系统', () => {
     await waitForInteractionSystem(page)
     await expect(page.locator('.site-navigation__routes')).toBeVisible()
     await expect(page.getByRole('button', { name: '打开全部导航' })).toBeHidden()
+    await expectNavigationClearOfContent(page)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
 
     await page.setViewportSize({ width: 1119, height: 720 })
     await expect(page.locator('.site-navigation__routes')).toBeHidden()
     await expect(page.getByRole('button', { name: '打开全部导航' })).toBeVisible()
+    await expectNavigationClearOfContent(page)
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
 
     const touchContext = await browser.newContext({
@@ -300,13 +360,14 @@ test.describe('全站视觉交互系统', () => {
       await waitForInteractionSystem(touchPage)
       await expect(touchPage.locator('.site-navigation__routes')).toBeHidden()
       await expect(touchPage.getByRole('button', { name: '打开全部导航' })).toBeVisible()
+      await expectNavigationClearOfContent(touchPage)
       expect(await touchPage.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
     } finally {
       await touchContext.close()
     }
   })
 
-  test('桌面 Target Cursor 隐藏系统指针，保持旋转相位并独立锁定四角', async ({ page }, testInfo) => {
+  test('桌面 Target Cursor 隐藏系统指针，归正旋转并独立锁定四角', async ({ page }, testInfo) => {
     test.skip(testInfo.project.name !== 'desktop', '仅在桌面条件下验证导航与准星。')
     await page.goto('/')
     await waitForInteractionSystem(page)
@@ -339,34 +400,52 @@ test.describe('全站视觉交互系统', () => {
     expect(rotationDelta).toBeLessThan(60)
 
     const musicLink = page.getByRole('link', { name: '音乐' }).first()
-    await page.evaluate(() => {
-      document.addEventListener('pointerover', (event) => {
-        const target = (event.target as Element | null)?.closest('.cursor-target')
-        if (!target) {
-          return
-        }
-        const ring = document.querySelector<HTMLElement>('.target-cursor__ring')
-        if (!ring) {
-          return
-        }
-        const matrix = new DOMMatrixReadOnly(getComputedStyle(ring).transform)
-        const degrees = Math.atan2(matrix.b, matrix.a) * 180 / Math.PI
-        ;(window as Window & { __cursorEntryRotation?: number }).__cursorEntryRotation =
-          degrees < 0 ? degrees + 360 : degrees
-      }, { capture: true, once: true })
-    })
-    await musicLink.hover()
-    await expect(cursor).toHaveAttribute('data-locked', 'true')
-    await page.waitForTimeout(260)
+    for (const entryPhase of [30, 120, 240]) {
+      await page.mouse.move(320, 520)
+      await expect(cursor).toHaveAttribute('data-locked', 'false')
+      await expect.poll(
+        async () => angularDistance(await rotationDegrees(page), entryPhase),
+        { intervals: [16], timeout: 2500 },
+      ).toBeLessThan(8)
 
-    const lockedRotation = await rotationDegrees(page)
-    const entryRotation = await page.evaluate(
-      () => (window as Window & { __cursorEntryRotation?: number }).__cursorEntryRotation,
-    )
-    expect(entryRotation).toBeDefined()
-    expect(clockwiseDelta(entryRotation ?? 0, lockedRotation)).toBeLessThan(1)
-    await page.waitForTimeout(180)
-    expect(await rotationDegrees(page)).toBeCloseTo(lockedRotation, 0)
+      await musicLink.hover()
+      await expect(cursor).toHaveAttribute('data-locked', 'true')
+      await expect.poll(
+        async () => angularDistance(await rotationDegrees(page), 0),
+        { intervals: [16], timeout: 300 },
+      ).toBeLessThan(1)
+      await page.waitForTimeout(260)
+      expect(angularDistance(await rotationDegrees(page), 0)).toBeLessThan(1)
+
+      const markBounds = await page.locator('.target-cursor__corner-mark').evaluateAll(
+        marks => marks.map((mark) => {
+          const bounds = mark.getBoundingClientRect()
+          return { width: bounds.width, height: bounds.height }
+        }),
+      )
+      for (const bounds of markBounds) {
+        expect(bounds.width).toBeCloseTo(12, 1)
+        expect(bounds.height).toBeCloseTo(12, 1)
+      }
+    }
+
+    const lockedCursorStyles = await cursor.evaluate((element) => ({
+      color: getComputedStyle(element).color,
+      borderWidths: Array.from(
+        element.querySelectorAll<HTMLElement>('.target-cursor__corner-mark'),
+        mark => [
+          getComputedStyle(mark).borderTopWidth,
+          getComputedStyle(mark).borderRightWidth,
+          getComputedStyle(mark).borderBottomWidth,
+          getComputedStyle(mark).borderLeftWidth,
+        ],
+      ),
+    }))
+    expect(lockedCursorStyles.color).toBe('rgb(180, 151, 207)')
+    for (const widths of lockedCursorStyles.borderWidths) {
+      expect(widths.filter(width => width === '3px')).toHaveLength(2)
+      expect(widths.filter(width => width === '0px')).toHaveLength(2)
+    }
 
     const targetBox = await musicLink.boundingBox()
     expect(targetBox).not.toBeNull()
@@ -448,8 +527,10 @@ test.describe('全站视觉交互系统', () => {
 
     await page.mouse.down()
     await expect.poll(async () => centerDotScale(page)).toBeLessThan(0.8)
+    await expect.poll(async () => cursorScale(page)).toBeLessThan(0.95)
     await page.mouse.up()
     await expect.poll(async () => centerDotScale(page)).toBeCloseTo(1, 5)
+    await expect.poll(async () => cursorScale(page)).toBeCloseTo(1, 5)
 
     await page.mouse.move(320, 520)
     await expect(cursor).toHaveAttribute('data-locked', 'false')
@@ -502,14 +583,20 @@ test.describe('全站视觉交互系统', () => {
     const menu = page.getByTestId('ritual-menu')
     await expect(menu).toHaveAttribute('data-open', 'true')
     await expect.poll(async () => page.evaluate(() => document.body.style.overflow)).toBe('hidden')
+    const menuBounds = await menu.boundingBox()
+    expect(menuBounds).not.toBeNull()
+    expect(menuBounds?.x).toBeCloseTo(0, 0)
+    expect(menuBounds?.y).toBeCloseTo(0, 0)
+    expect(menuBounds?.width).toBeCloseTo(await page.evaluate(() => window.innerWidth), 0)
+    expect(menuBounds?.height).toBeCloseTo(await page.evaluate(() => window.innerHeight), 0)
     await expect(page.getByRole('button', { name: '关闭导航' })).toBeFocused()
 
     await page.keyboard.press('Shift+Tab')
-    await expect(page.getByRole('link', { name: '访客留言' }).last()).toBeFocused()
+    await expect(menu.getByRole('link', { name: '访客留言' })).toBeFocused()
     await page.keyboard.press('Tab')
     await expect(page.getByRole('button', { name: '关闭导航' })).toBeFocused()
     await page.keyboard.press('Tab')
-    await expect(page.getByRole('link', { name: '首页' }).last()).toBeFocused()
+    await expect(menu.getByRole('link', { name: '首页' })).toBeFocused()
     await page.keyboard.press('Escape')
     await expect(menu).toHaveAttribute('data-open', 'false')
     await expect(menu).toHaveAttribute('inert', '')
@@ -525,7 +612,7 @@ test.describe('全站视觉交互系统', () => {
     await expect(trigger).toBeFocused()
 
     await trigger.click()
-    const menuMusicLink = page.getByRole('link', { name: '音乐' }).last()
+    const menuMusicLink = menu.getByRole('link', { name: '音乐' })
     await Promise.all([
       page.waitForURL('**/music'),
       menuMusicLink.click(),

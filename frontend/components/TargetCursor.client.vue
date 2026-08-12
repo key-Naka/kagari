@@ -54,19 +54,15 @@ function readGsapNumber(element: HTMLElement, property: 'x' | 'y' | 'rotation'):
   return Number(gsap.getProperty(element, property)) || 0
 }
 
-function toRingCoordinates(point: Point): Point {
+function toCursorCoordinates(point: Point): Point {
   const cursorElement = cursor.value
-  const ringElement = ring.value
-  if (!cursorElement || !ringElement) {
+  if (!cursorElement) {
     return point
   }
 
-  const radians = -readGsapNumber(ringElement, 'rotation') * Math.PI / 180
-  const x = point.x - readGsapNumber(cursorElement, 'x')
-  const y = point.y - readGsapNumber(cursorElement, 'y')
   return {
-    x: x * Math.cos(radians) - y * Math.sin(radians),
-    y: x * Math.sin(radians) + y * Math.cos(radians),
+    x: point.x - readGsapNumber(cursorElement, 'x'),
+    y: point.y - readGsapNumber(cursorElement, 'y'),
   }
 }
 
@@ -114,7 +110,7 @@ function updateLockedCorners(animate = false): void {
 
   const targetPositions = targetCornerPositions(lockedTarget)
   const positions = Object.fromEntries(
-    CORNERS.map(({ name }) => [name, toRingCoordinates(targetPositions[name])]),
+    CORNERS.map(({ name }) => [name, toCursorCoordinates(targetPositions[name])]),
   ) as Record<CornerName, Point>
   if (!animate) {
     setCornerPositions(positions)
@@ -145,6 +141,21 @@ function observeTarget(target: HTMLElement): void {
   targetResizeObserver.observe(target)
 }
 
+function startSpin(): void {
+  const ringElement = ring.value
+  if (!gsap || !ringElement) {
+    return
+  }
+
+  spinTween?.kill()
+  spinTween = gsap.to(ringElement, {
+    rotation: '+=360',
+    duration: 2,
+    ease: 'none',
+    repeat: -1,
+  })
+}
+
 function lock(target: HTMLElement): void {
   if (!gsap || lockedTarget === target) {
     return
@@ -152,7 +163,12 @@ function lock(target: HTMLElement): void {
 
   lockedTarget = target
   locked.value = true
-  spinTween?.pause()
+  spinTween?.kill()
+  spinTween = null
+  if (ring.value) {
+    gsap.killTweensOf(ring.value, 'rotation')
+    gsap.set(ring.value, { rotation: 0 })
+  }
   observeTarget(target)
   updateLockedCorners(true)
 }
@@ -179,7 +195,7 @@ function unlock(): void {
       }, 0)
     })
   }
-  spinTween?.play()
+  startSpin()
 }
 
 function onPointerMove(event: PointerEvent): void {
@@ -207,11 +223,17 @@ function onPointerDown(): void {
   if (gsap && dot.value) {
     gsap.to(dot.value, { scale: 0.65, duration: 0.12, ease: 'power2.out' })
   }
+  if (gsap && cursor.value) {
+    gsap.to(cursor.value, { scale: 0.9, duration: 0.2, ease: 'power2.out' })
+  }
 }
 
 function onPointerUp(): void {
   if (gsap && dot.value) {
     gsap.to(dot.value, { scale: 1, duration: 0.16, ease: 'power2.out' })
+  }
+  if (gsap && cursor.value) {
+    gsap.to(cursor.value, { scale: 1, duration: 0.2, ease: 'power2.out' })
   }
 }
 
@@ -319,12 +341,7 @@ async function reconcileCursor(): Promise<void> {
   setCornerPositions(FREE_POSITIONS)
   moveCursorX = gsap.quickTo(cursorElement, 'x', { duration: 0.1, ease: 'power3.out' })
   moveCursorY = gsap.quickTo(cursorElement, 'y', { duration: 0.1, ease: 'power3.out' })
-  spinTween = gsap.to(ringElement, {
-    rotation: '+=360',
-    duration: 2,
-    ease: 'none',
-    repeat: -1,
-  })
+  startSpin()
 
   document.documentElement.classList.add('kagari-target-cursor')
   addListeners()
@@ -396,7 +413,7 @@ onBeforeUnmount(() => {
   width: 1px;
   height: 1px;
   pointer-events: none;
-  color: rgba(236, 233, 223, 0.92);
+  color: #ffffff;
   will-change: transform;
 }
 
@@ -439,31 +456,31 @@ onBeforeUnmount(() => {
 .target-cursor__corner-mark--top-left {
   top: 0;
   left: 0;
-  border-width: 2px 0 0 2px;
+  border-width: 3px 0 0 3px;
 }
 
 .target-cursor__corner-mark--top-right {
   top: 0;
   left: 0;
   transform: translateX(-100%);
-  border-width: 2px 2px 0 0;
+  border-width: 3px 3px 0 0;
 }
 
 .target-cursor__corner-mark--bottom-right {
   top: 0;
   left: 0;
   transform: translate(-100%, -100%);
-  border-width: 0 2px 2px 0;
+  border-width: 0 3px 3px 0;
 }
 
 .target-cursor__corner-mark--bottom-left {
   top: 0;
   left: 0;
   transform: translateY(-100%);
-  border-width: 0 0 2px 2px;
+  border-width: 0 0 3px 3px;
 }
 
 .target-cursor--locked {
-  color: rgba(180, 151, 207, 0.96);
+  color: #b497cf;
 }
 </style>
