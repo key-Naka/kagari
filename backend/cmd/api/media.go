@@ -6,17 +6,21 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	driverMysql "github.com/go-sql-driver/mysql"
 	"github.com/gofiber/fiber/v2"
+	qiniuAuth "github.com/qiniu/go-sdk/v7/auth"
 	qiniuClient "github.com/qiniu/go-sdk/v7/client"
+	qiniuStorage "github.com/qiniu/go-sdk/v7/storage"
 	"github.com/qiniu/go-sdk/v7/storagev2/credentials"
 	httpclient "github.com/qiniu/go-sdk/v7/storagev2/http_client"
 	"github.com/qiniu/go-sdk/v7/storagev2/objects"
@@ -35,6 +39,7 @@ const (
 var (
 	errMediaObjectKeyTaken = errors.New("media object key already exists")
 	errMediaObjectNotFound = errors.New("media object not found")
+	errInvalidMediaRange   = errors.New("invalid media byte range")
 	mediaObjectKeyPattern  = regexp.MustCompile(`^media/(image|audio)/[0-9]{4}/(0[1-9]|1[0-2])/[A-Za-z0-9_-]+\.[a-z0-9]+$`)
 )
 
@@ -128,6 +133,10 @@ type mediaObjectInspector interface {
 	Stat(context.Context, string) (mediaObjectDetails, error)
 }
 
+type mediaObjectReader interface {
+	Open(context.Context, string, string) (io.ReadCloser, error)
+}
+
 type qiniuUploadTokenIssuer struct {
 	accessKey string
 	secretKey string
@@ -176,15 +185,135 @@ func (inspector qiniuObjectInspector) Stat(ctx context.Context, objectKey string
 	return mediaObjectDetails{MimeType: details.MimeType, Size: details.Size}, nil
 }
 
+type qiniuObjectReader struct {
+	manager *qiniuStorage.BucketManager
+	bucket  string
+}
+
+func (reader qiniuObjectReader) Open(ctx context.Context, objectKey, byteRange string) (io.ReadCloser, error) {
+	output, err := reader.manager.Get(reader.bucket, objectKey, &qiniuStorage.GetObjectInput{
+		Context: ctx,
+		Range:   byteRange,
+	})
+	if err != nil {
+		if output != nil && output.Body != nil {
+			output.Body.Close()
+		}
+		return nil, fmt.Errorf("read qiniu object: %w", err)
+	}
+	if output == nil || output.Body == nil {
+		return nil, errors.New("read qiniu object: empty response body")
+	}
+	return output.Body, nil
+}
+
 type mediaService struct {
 	repository    mediaRepository
 	issuer        uploadTokenIssuer
 	inspector     mediaObjectInspector
+	reader        mediaObjectReader
 	publicBaseURL string
 	uploadURL     string
 	now           func() time.Time
 	newID         func() string
 	tokenTTL      time.Duration
+}
+
+type mediaByteRange struct {
+	start   int64
+	end     int64
+	partial bool
+}
+
+func (service *mediaService) publicObject(c *fiber.Ctx) error {
+	objectKey := strings.TrimPrefix(c.Params("*"), "/")
+	if !mediaObjectKeyPattern.MatchString(objectKey) {
+		return c.SendStatus(fiber.StatusNotFound)
+	}
+	details, err := service.inspector.Stat(c.Context(), objectKey)
+	if errors.Is(err, errMediaObjectNotFound) {
+		return c.SendStatus(fiber.StatusNotFound)
+	}
+	if err != nil {
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "verify media object"})
+	}
+	byteRange, err := parseMediaByteRange(c.Get(fiber.HeaderRange), details.Size)
+	if err != nil {
+		c.Set(fiber.HeaderContentRange, fmt.Sprintf("bytes */%d", details.Size))
+		return c.SendStatus(fiber.StatusRequestedRangeNotSatisfiable)
+	}
+
+	contentLength := byteRange.end - byteRange.start + 1
+	c.Set(fiber.HeaderAcceptRanges, "bytes")
+	c.Set(fiber.HeaderCacheControl, "public, max-age=31536000, immutable")
+	c.Set(fiber.HeaderContentType, details.MimeType)
+	c.Set(fiber.HeaderContentLength, strconv.FormatInt(contentLength, 10))
+	if byteRange.partial {
+		c.Set(
+			fiber.HeaderContentRange,
+			fmt.Sprintf("bytes %d-%d/%d", byteRange.start, byteRange.end, details.Size),
+		)
+		c.Status(fiber.StatusPartialContent)
+	}
+	if c.Method() == fiber.MethodHead {
+		return nil
+	}
+	if service.reader == nil {
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "read media object"})
+	}
+
+	rangeHeader := ""
+	if byteRange.partial {
+		rangeHeader = fmt.Sprintf("bytes=%d-%d", byteRange.start, byteRange.end)
+	}
+	body, err := service.reader.Open(c.Context(), objectKey, rangeHeader)
+	if err != nil {
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": "read media object"})
+	}
+	return c.SendStream(body, int(contentLength))
+}
+
+func parseMediaByteRange(value string, size int64) (mediaByteRange, error) {
+	if size <= 0 {
+		return mediaByteRange{}, errInvalidMediaRange
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return mediaByteRange{start: 0, end: size - 1}, nil
+	}
+	if !strings.HasPrefix(value, "bytes=") || strings.Contains(value, ",") {
+		return mediaByteRange{}, errInvalidMediaRange
+	}
+	parts := strings.SplitN(strings.TrimPrefix(value, "bytes="), "-", 2)
+	if len(parts) != 2 {
+		return mediaByteRange{}, errInvalidMediaRange
+	}
+	startText, endText := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+	if startText == "" {
+		suffix, err := strconv.ParseInt(endText, 10, 64)
+		if err != nil || suffix <= 0 {
+			return mediaByteRange{}, errInvalidMediaRange
+		}
+		if suffix > size {
+			suffix = size
+		}
+		return mediaByteRange{start: size - suffix, end: size - 1, partial: true}, nil
+	}
+	start, err := strconv.ParseInt(startText, 10, 64)
+	if err != nil || start < 0 || start >= size {
+		return mediaByteRange{}, errInvalidMediaRange
+	}
+	end := size - 1
+	if endText != "" {
+		end, err = strconv.ParseInt(endText, 10, 64)
+		if err != nil || end < start {
+			return mediaByteRange{}, errInvalidMediaRange
+		}
+		if end >= size {
+			end = size - 1
+		}
+	}
+	return mediaByteRange{start: start, end: end, partial: true}, nil
 }
 
 func (service *mediaService) uploadCredentials(c *fiber.Ctx) error {
@@ -437,6 +566,10 @@ func mediaServiceFromEnvironment(db *gorm.DB) (*mediaService, error) {
 		return nil, err
 	}
 	qiniuCredentials := credentials.NewCredentials(accessKey, secretKey)
+	qiniuBucketManager := qiniuStorage.NewBucketManager(
+		qiniuAuth.New(accessKey, secretKey),
+		&qiniuStorage.Config{UseHTTPS: true},
+	)
 	return &mediaService{
 		repository: gormMediaRepository{db: db},
 		issuer: qiniuUploadTokenIssuer{
@@ -449,6 +582,10 @@ func mediaServiceFromEnvironment(db *gorm.DB) (*mediaService, error) {
 				Options: httpclient.Options{Credentials: qiniuCredentials},
 			}),
 			bucket: bucket,
+		},
+		reader: qiniuObjectReader{
+			manager: qiniuBucketManager,
+			bucket:  bucket,
 		},
 		publicBaseURL: publicBaseURL,
 		uploadURL:     uploadURL,

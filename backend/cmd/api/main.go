@@ -696,6 +696,8 @@ func newApp(dependencies []dependency, services ...appServices) *fiber.App {
 	app.Put("/api/v1/admin/posts/:id", service.requireSession(service.updatePost))
 	app.Delete("/api/v1/admin/posts/:id", service.requireSession(service.deletePost))
 	if service.media != nil {
+		app.Get("/api/v1/media/*", service.media.publicObject)
+		app.Head("/api/v1/media/*", service.media.publicObject)
 		app.Post("/api/v1/admin/media/upload-credentials", service.requireSession(service.media.uploadCredentials))
 		app.Post("/api/v1/admin/media", service.requireSession(service.media.register))
 	}

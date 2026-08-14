@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -46,6 +48,50 @@ func (inspector memoryMediaObjectInspector) Stat(_ context.Context, objectKey st
 	return details, nil
 }
 
+type memoryMediaObjectReader struct {
+	objects   map[string][]byte
+	err       error
+	lastRange string
+}
+
+type closeAwareMediaBody struct {
+	reader *bytes.Reader
+	closed bool
+}
+
+func (body *closeAwareMediaBody) Read(buffer []byte) (int, error) {
+	if body.closed {
+		return 0, errors.New("read closed media body")
+	}
+	return body.reader.Read(buffer)
+}
+
+func (body *closeAwareMediaBody) Close() error {
+	body.closed = true
+	return nil
+}
+
+func (reader *memoryMediaObjectReader) Open(_ context.Context, objectKey, byteRange string) (io.ReadCloser, error) {
+	if reader.err != nil {
+		return nil, reader.err
+	}
+	contents, ok := reader.objects[objectKey]
+	if !ok {
+		return nil, errMediaObjectNotFound
+	}
+	reader.lastRange = byteRange
+	switch byteRange {
+	case "":
+	case "bytes=1-3":
+		contents = contents[1:4]
+	case "bytes=4-5":
+		contents = contents[4:6]
+	default:
+		return nil, errors.New("unexpected byte range")
+	}
+	return &closeAwareMediaBody{reader: bytes.NewReader(contents)}, nil
+}
+
 func newMediaTestApp(t *testing.T) (*fiber.App, *memoryMediaRepository) {
 	t.Helper()
 
@@ -54,6 +100,8 @@ func newMediaTestApp(t *testing.T) (*fiber.App, *memoryMediaRepository) {
 		t.Fatalf("initialize administrator: %v", err)
 	}
 	repository := &memoryMediaRepository{media: make(map[string]mediaRecord)}
+	objectKey := "media/image/2026/08/018f4f4e-6e80-7de3-a769-6d62a0df4f31.webp"
+	publicObjectKey := "media/image/2026/08/public-object.webp"
 	media := &mediaService{
 		repository: repository,
 		issuer: qiniuUploadTokenIssuer{
@@ -62,14 +110,21 @@ func newMediaTestApp(t *testing.T) (*fiber.App, *memoryMediaRepository) {
 			bucket:    "test-bucket",
 		},
 		inspector: memoryMediaObjectInspector{objects: map[string]mediaObjectDetails{
-			"media/image/2026/08/018f4f4e-6e80-7de3-a769-6d62a0df4f31.webp": {
+			objectKey: {
 				MimeType: "image/webp",
 				Size:     1048576,
+			},
+			publicObjectKey: {
+				MimeType: "image/webp",
+				Size:     6,
 			},
 			"media/audio/2026/08/018f4f4e-6e80-7de3-a769-6d62a0df4f31.mp3": {
 				MimeType: "audio/mpeg",
 				Size:     1048576,
 			},
+		}},
+		reader: &memoryMediaObjectReader{objects: map[string][]byte{
+			publicObjectKey: []byte("abcdef"),
 		}},
 		publicBaseURL: "https://cdn.example.com",
 		uploadURL:     "https://up-z2.qiniup.com",
@@ -91,6 +146,177 @@ func newMediaTestApp(t *testing.T) (*fiber.App, *memoryMediaRepository) {
 		cookieDomain:   ".ykagari.top",
 		corsOrigin:     "https://ykagari.top",
 	}), repository
+}
+
+func TestPublicMediaObjectSupportsGetHeadAndRanges(t *testing.T) {
+	app, _ := newMediaTestApp(t)
+	objectPath := "/api/v1/media/media/image/2026/08/public-object.webp"
+
+	tests := []struct {
+		name             string
+		method           string
+		rangeHeader      string
+		wantStatus       int
+		wantBody         string
+		wantContentRange string
+		wantLength       string
+	}{
+		{
+			name:       "full object",
+			method:     fiber.MethodGet,
+			wantStatus: fiber.StatusOK,
+			wantBody:   "abcdef",
+			wantLength: "6",
+		},
+		{
+			name:       "head",
+			method:     fiber.MethodHead,
+			wantStatus: fiber.StatusOK,
+			wantLength: "6",
+		},
+		{
+			name:             "bounded range",
+			method:           fiber.MethodGet,
+			rangeHeader:      "bytes=1-3",
+			wantStatus:       fiber.StatusPartialContent,
+			wantBody:         "bcd",
+			wantContentRange: "bytes 1-3/6",
+			wantLength:       "3",
+		},
+		{
+			name:             "suffix range",
+			method:           fiber.MethodGet,
+			rangeHeader:      "bytes=-2",
+			wantStatus:       fiber.StatusPartialContent,
+			wantBody:         "ef",
+			wantContentRange: "bytes 4-5/6",
+			wantLength:       "2",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(test.method, objectPath, nil)
+			if test.rangeHeader != "" {
+				request.Header.Set(fiber.HeaderRange, test.rangeHeader)
+			}
+			response, err := app.Test(request)
+			if err != nil {
+				t.Fatalf("read public media: %v", err)
+			}
+			defer response.Body.Close()
+			body, err := io.ReadAll(response.Body)
+			if err != nil {
+				t.Fatalf("read response body: %v", err)
+			}
+			if response.StatusCode != test.wantStatus {
+				t.Errorf("status = %d, want %d", response.StatusCode, test.wantStatus)
+			}
+			if string(body) != test.wantBody {
+				t.Errorf("body = %q, want %q", body, test.wantBody)
+			}
+			if response.Header.Get(fiber.HeaderContentType) != "image/webp" {
+				t.Errorf("content type = %q, want image/webp", response.Header.Get(fiber.HeaderContentType))
+			}
+			if response.Header.Get(fiber.HeaderAcceptRanges) != "bytes" {
+				t.Errorf("accept ranges = %q, want bytes", response.Header.Get(fiber.HeaderAcceptRanges))
+			}
+			if response.Header.Get(fiber.HeaderContentRange) != test.wantContentRange {
+				t.Errorf("content range = %q, want %q", response.Header.Get(fiber.HeaderContentRange), test.wantContentRange)
+			}
+			if response.Header.Get(fiber.HeaderContentLength) != test.wantLength {
+				t.Errorf("content length = %q, want %q", response.Header.Get(fiber.HeaderContentLength), test.wantLength)
+			}
+			if response.Header.Get(fiber.HeaderCacheControl) != "public, max-age=31536000, immutable" {
+				t.Errorf("cache control = %q, want immutable public caching", response.Header.Get(fiber.HeaderCacheControl))
+			}
+		})
+	}
+}
+
+func TestPublicMediaObjectRejectsInvalidRequests(t *testing.T) {
+	objectKey := "media/image/2026/08/018f4f4e-6e80-7de3-a769-6d62a0df4f31.webp"
+	tests := []struct {
+		name        string
+		path        string
+		rangeHeader string
+		inspector   mediaObjectInspector
+		reader      mediaObjectReader
+		wantStatus  int
+	}{
+		{
+			name:       "invalid managed key",
+			path:       "/api/v1/media/other/image.webp",
+			wantStatus: fiber.StatusNotFound,
+		},
+		{
+			name:        "multiple ranges",
+			path:        "/api/v1/media/" + objectKey,
+			rangeHeader: "bytes=0-1,3-4",
+			inspector: memoryMediaObjectInspector{objects: map[string]mediaObjectDetails{
+				objectKey: {MimeType: "image/webp", Size: 6},
+			}},
+			wantStatus: fiber.StatusRequestedRangeNotSatisfiable,
+		},
+		{
+			name:        "range starts past object",
+			path:        "/api/v1/media/" + objectKey,
+			rangeHeader: "bytes=6-",
+			inspector: memoryMediaObjectInspector{objects: map[string]mediaObjectDetails{
+				objectKey: {MimeType: "image/webp", Size: 6},
+			}},
+			wantStatus: fiber.StatusRequestedRangeNotSatisfiable,
+		},
+		{
+			name:       "object does not exist",
+			path:       "/api/v1/media/" + objectKey,
+			inspector:  memoryMediaObjectInspector{objects: map[string]mediaObjectDetails{}},
+			wantStatus: fiber.StatusNotFound,
+		},
+		{
+			name:       "object metadata lookup fails",
+			path:       "/api/v1/media/" + objectKey,
+			inspector:  memoryMediaObjectInspector{err: errors.New("Qiniu unavailable")},
+			wantStatus: fiber.StatusBadGateway,
+		},
+		{
+			name: "object read fails",
+			path: "/api/v1/media/" + objectKey,
+			inspector: memoryMediaObjectInspector{objects: map[string]mediaObjectDetails{
+				objectKey: {MimeType: "image/webp", Size: 6},
+			}},
+			reader:     &memoryMediaObjectReader{err: errors.New("Qiniu unavailable")},
+			wantStatus: fiber.StatusBadGateway,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			app := newApp(nil, appServices{
+				media: &mediaService{
+					inspector: test.inspector,
+					reader:    test.reader,
+				},
+				corsOrigin: "https://ykagari.top",
+			})
+			request := httptest.NewRequest(fiber.MethodGet, test.path, nil)
+			if test.rangeHeader != "" {
+				request.Header.Set(fiber.HeaderRange, test.rangeHeader)
+			}
+			response, err := app.Test(request)
+			if err != nil {
+				t.Fatalf("read public media: %v", err)
+			}
+			defer response.Body.Close()
+			if response.StatusCode != test.wantStatus {
+				t.Errorf("status = %d, want %d", response.StatusCode, test.wantStatus)
+			}
+			if test.wantStatus == fiber.StatusRequestedRangeNotSatisfiable &&
+				response.Header.Get(fiber.HeaderContentRange) != "bytes */6" {
+				t.Errorf("content range = %q, want bytes */6", response.Header.Get(fiber.HeaderContentRange))
+			}
+		})
+	}
 }
 
 func adminMediaRequest(method, path, body string) *http.Request {
