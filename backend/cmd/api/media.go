@@ -60,7 +60,22 @@ type mediaRepository interface {
 	Save(context.Context, mediaRecord) (mediaRecord, error)
 }
 
+type mediaLookup interface {
+	FindByID(context.Context, uint) (mediaRecord, error)
+}
+
 type gormMediaRepository struct{ db *gorm.DB }
+
+func (repository gormMediaRepository) FindByID(ctx context.Context, id uint) (mediaRecord, error) {
+	var record mediaRecord
+	if err := repository.db.WithContext(ctx).First(&record, id).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return mediaRecord{}, errMediaObjectNotFound
+		}
+		return mediaRecord{}, fmt.Errorf("find media record: %w", err)
+	}
+	return record, nil
+}
 
 func (repository gormMediaRepository) Save(ctx context.Context, record mediaRecord) (mediaRecord, error) {
 	if err := repository.db.WithContext(ctx).Create(&record).Error; err != nil {

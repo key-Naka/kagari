@@ -652,6 +652,8 @@ type appServices struct {
 	sessions       sessionRepository
 	projects       projectRepository
 	posts          postRepository
+	tracks         trackRepository
+	mediaRecords   mediaLookup
 	media          *mediaService
 	status         *serviceStatusService
 	github         *githubActivityService
@@ -682,6 +684,7 @@ func newApp(dependencies []dependency, services ...appServices) *fiber.App {
 	app.Get("/api/v1/posts/tags", service.publicPostTags)
 	app.Get("/api/v1/posts/archives", service.publicPostArchives)
 	app.Get("/api/v1/posts/:slug", service.publicPost)
+	app.Get("/api/v1/tracks", service.publicTracks)
 	app.Post("/api/v1/admin/session", service.login)
 	app.Delete("/api/v1/admin/session", service.logout)
 	app.Get("/api/v1/admin/session", service.requireSession(service.sessionStatus))
@@ -695,6 +698,9 @@ func newApp(dependencies []dependency, services ...appServices) *fiber.App {
 	app.Post("/api/v1/admin/posts", service.requireSession(service.createPost))
 	app.Put("/api/v1/admin/posts/:id", service.requireSession(service.updatePost))
 	app.Delete("/api/v1/admin/posts/:id", service.requireSession(service.deletePost))
+	app.Get("/api/v1/admin/tracks", service.requireSession(service.adminTracks))
+	app.Post("/api/v1/admin/tracks", service.requireSession(service.createTrack))
+	app.Put("/api/v1/admin/tracks/:id", service.requireSession(service.updateTrack))
 	if service.media != nil {
 		app.Get("/api/v1/media/*", service.media.publicObject)
 		app.Head("/api/v1/media/*", service.media.publicObject)
@@ -855,7 +861,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	if err := db.AutoMigrate(&admin{}, &siteConfig{}, &portfolioProject{}, &blogPost{}, &mediaRecord{}); err != nil {
+	if err := db.AutoMigrate(&admin{}, &siteConfig{}, &portfolioProject{}, &blogPost{}, &mediaRecord{}, &track{}); err != nil {
 		panic(err)
 	}
 	redisDB, err := redisDatabaseFromEnvironment()
@@ -872,7 +878,8 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	services := appServices{administrators: administrators, config: gormConfigRepository{db: db}, sessions: redisSessionRepository{client: client}, projects: gormProjectRepository{db: db}, posts: gormPostRepository{db: db}, media: media, ttl: sessionTTL(), cookieDomain: cookieDomain(), corsOrigin: corsOrigin()}
+	mediaRecords := gormMediaRepository{db: db}
+	services := appServices{administrators: administrators, config: gormConfigRepository{db: db}, sessions: redisSessionRepository{client: client}, projects: gormProjectRepository{db: db}, posts: gormPostRepository{db: db}, tracks: gormTrackRepository{db: db}, mediaRecords: mediaRecords, media: media, ttl: sessionTTL(), cookieDomain: cookieDomain(), corsOrigin: corsOrigin()}
 	dependencies := []dependency{databaseDependency{db: db}, redisDependency{client: client}}
 	statusContext, cancelStatus := context.WithCancel(context.Background())
 	defer cancelStatus()

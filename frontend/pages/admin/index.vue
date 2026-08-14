@@ -131,6 +131,7 @@ onMounted(loadSiteConfig)
       <nav class="mb-8 flex flex-wrap gap-3 border-b border-zinc-800 pb-6" aria-label="内容管理">
         <NuxtLink to="/admin/projects" class="rounded-md border border-zinc-700 px-4 py-2 text-sm font-medium transition hover:border-zinc-300">管理作品</NuxtLink>
         <NuxtLink to="/admin/posts" class="rounded-md border border-zinc-700 px-4 py-2 text-sm font-medium transition hover:border-zinc-300">管理博客</NuxtLink>
+        <NuxtLink to="/admin/tracks" class="rounded-md border border-zinc-700 px-4 py-2 text-sm font-medium transition hover:border-zinc-300">管理 Track</NuxtLink>
       </nav>
 
       <div v-if="isLoadingConfig" class="rounded-lg border border-zinc-800 bg-zinc-900/40 p-6 text-sm text-zinc-300" role="status">正在加载站点配置…</div>
