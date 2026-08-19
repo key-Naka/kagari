@@ -64,6 +64,8 @@ describe('生产发布契约', () => {
     for (const dockerfile of [frontendDockerfile, backendDockerfile]) {
       expect(dockerfile).not.toMatch(/(?:ARG|ENV)\s+(?:MYSQL_DSN|REDIS_PASSWORD|ADMIN_PASSWORD|QINIU_SECRET_KEY)/)
     }
+    expect(frontendDockerfile).toContain('FROM node:24-alpine AS build')
+    expect(frontendDockerfile).toContain('FROM node:24-alpine\n')
     expect(frontendDockerfile).toContain('USER nuxt')
     expect(frontendDockerignore).toContain('.env*')
     expect(backendDockerignore).toContain('.env*')
