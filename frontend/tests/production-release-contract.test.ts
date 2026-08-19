@@ -42,6 +42,7 @@ describe('生产发布契约', () => {
     }
     expect(serviceBlock('host-metrics')).toContain('[ "CMD", "wget", "--quiet", "--output-document=/dev/null", "http://127.0.0.1:8090/status" ]')
     expect(serviceBlock('host-metrics')).not.toContain('--spider')
+    expect(serviceBlock('docker-proxy')).toContain('[ "CMD", "haproxy", "-c", "-f", "/tmp/haproxy.cfg" ]')
     for (const name of ['host-metrics', 'docker-proxy', 'mysql', 'redis']) {
       expect(serviceBlock(name)).not.toMatch(/^    ports:/m)
       expect(serviceBlock(name)).toContain('- private')
