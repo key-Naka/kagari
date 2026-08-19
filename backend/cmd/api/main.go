@@ -647,19 +647,21 @@ func (repository redisSessionRepository) Delete(ctx context.Context, token strin
 }
 
 type appServices struct {
-	administrators adminRepository
-	config         configRepository
-	sessions       sessionRepository
-	projects       projectRepository
-	posts          postRepository
-	tracks         trackRepository
-	mediaRecords   mediaLookup
-	media          *mediaService
-	status         *serviceStatusService
-	github         *githubActivityService
-	ttl            time.Duration
-	cookieDomain   string
-	corsOrigin     string
+	administrators  adminRepository
+	config          configRepository
+	sessions        sessionRepository
+	projects        projectRepository
+	posts           postRepository
+	tracks          trackRepository
+	visitorMessages visitorMessageRepository
+	messageLimiter  visitorMessageRateLimiter
+	mediaRecords    mediaLookup
+	media           *mediaService
+	status          *serviceStatusService
+	github          *githubActivityService
+	ttl             time.Duration
+	cookieDomain    string
+	corsOrigin      string
 }
 
 type loginRequest struct {
@@ -685,6 +687,12 @@ func newApp(dependencies []dependency, services ...appServices) *fiber.App {
 	app.Get("/api/v1/posts/archives", service.publicPostArchives)
 	app.Get("/api/v1/posts/:slug", service.publicPost)
 	app.Get("/api/v1/tracks", service.publicTracks)
+	if service.visitorMessages != nil {
+		app.Get("/api/v1/visitor-messages", service.publicVisitorMessages)
+		app.Post("/api/v1/visitor-messages", service.createVisitorMessage)
+		app.Get("/api/v1/admin/visitor-messages", service.requireSession(service.adminVisitorMessages))
+		app.Delete("/api/v1/admin/visitor-messages/:id", service.requireSession(service.deleteVisitorMessage))
+	}
 	app.Post("/api/v1/admin/session", service.login)
 	app.Delete("/api/v1/admin/session", service.logout)
 	app.Get("/api/v1/admin/session", service.requireSession(service.sessionStatus))
@@ -861,7 +869,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	if err := db.AutoMigrate(&admin{}, &siteConfig{}, &portfolioProject{}, &blogPost{}, &mediaRecord{}, &track{}); err != nil {
+	if err := db.AutoMigrate(&admin{}, &siteConfig{}, &portfolioProject{}, &blogPost{}, &mediaRecord{}, &track{}, &visitorMessage{}); err != nil {
 		panic(err)
 	}
 	redisDB, err := redisDatabaseFromEnvironment()
@@ -879,7 +887,21 @@ func main() {
 		panic(err)
 	}
 	mediaRecords := gormMediaRepository{db: db}
-	services := appServices{administrators: administrators, config: gormConfigRepository{db: db}, sessions: redisSessionRepository{client: client}, projects: gormProjectRepository{db: db}, posts: gormPostRepository{db: db}, tracks: gormTrackRepository{db: db}, mediaRecords: mediaRecords, media: media, ttl: sessionTTL(), cookieDomain: cookieDomain(), corsOrigin: corsOrigin()}
+	services := appServices{
+		administrators:  administrators,
+		config:          gormConfigRepository{db: db},
+		sessions:        redisSessionRepository{client: client},
+		projects:        gormProjectRepository{db: db},
+		posts:           gormPostRepository{db: db},
+		tracks:          gormTrackRepository{db: db},
+		visitorMessages: gormVisitorMessageRepository{db: db},
+		messageLimiter:  redisVisitorMessageRateLimiter{client: client, limit: 3, window: 10 * time.Minute},
+		mediaRecords:    mediaRecords,
+		media:           media,
+		ttl:             sessionTTL(),
+		cookieDomain:    cookieDomain(),
+		corsOrigin:      corsOrigin(),
+	}
 	dependencies := []dependency{databaseDependency{db: db}, redisDependency{client: client}}
 	statusContext, cancelStatus := context.WithCancel(context.Background())
 	defer cancelStatus()
