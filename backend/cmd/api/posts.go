@@ -333,6 +333,24 @@ func postMatchesFilter(post blogPost, tag, archive string) (bool, error) {
 	return true, nil
 }
 
+func publishedPosts(posts []blogPost, tag, archive string) ([]blogPost, error) {
+	published := make([]blogPost, 0, len(posts))
+	for _, post := range posts {
+		if post.Status != postStatusPublished {
+			continue
+		}
+		matches, err := postMatchesFilter(post, tag, archive)
+		if err != nil {
+			return nil, err
+		}
+		if matches {
+			published = append(published, post)
+		}
+	}
+	sortedPosts(published)
+	return published, nil
+}
+
 func (service appServices) publicPosts(c *fiber.Ctx) error {
 	tag := strings.TrimSpace(c.Query("tag"))
 	archive := strings.TrimSpace(c.Query("archive"))
@@ -343,20 +361,10 @@ func (service appServices) publicPosts(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "list blog posts"})
 	}
-	published := make([]blogPost, 0, len(posts))
-	for _, post := range posts {
-		if post.Status != postStatusPublished {
-			continue
-		}
-		matches, err := postMatchesFilter(post, tag, archive)
-		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "decode blog post tags"})
-		}
-		if matches {
-			published = append(published, post)
-		}
+	published, err := publishedPosts(posts, tag, archive)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "decode blog post tags"})
 	}
-	sortedPosts(published)
 	response := make([]publicPostResponse, 0, len(published))
 	for _, post := range published {
 		value, err := publicPost(post)

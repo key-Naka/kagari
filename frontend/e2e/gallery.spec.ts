@@ -1,4 +1,35 @@
+import { readFile } from 'node:fs/promises'
+import { createServer, type Server } from 'node:http'
+import { resolve } from 'node:path'
 import { expect, test, type Locator, type Page } from '@playwright/test'
+
+let apiServer: Server
+
+test.beforeAll(async () => {
+  const galleryItems = JSON.parse(await readFile(
+    resolve(import.meta.dirname, '../../backend/cmd/api/gallery_items.json'),
+    'utf8',
+  ))
+  apiServer = createServer((request, response) => {
+    response.setHeader('Access-Control-Allow-Origin', 'http://127.0.0.1:3001')
+    response.setHeader('Content-Type', 'application/json')
+    if (request.url !== '/api/v1/gallery-items') {
+      response.writeHead(404)
+      response.end('{"error":"not found"}')
+      return
+    }
+    response.writeHead(200)
+    response.end(JSON.stringify(galleryItems))
+  })
+  await new Promise<void>((resolveListen, reject) => {
+    apiServer.once('error', reject)
+    apiServer.listen(8080, '127.0.0.1', resolveListen)
+  })
+})
+
+test.afterAll(async () => {
+  await new Promise<void>((resolveClose, reject) => apiServer.close(error => error ? reject(error) : resolveClose()))
+})
 
 interface Point {
   x: number

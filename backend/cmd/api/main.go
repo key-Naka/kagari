@@ -678,6 +678,8 @@ func newApp(dependencies []dependency, services ...appServices) *fiber.App {
 
 	service := services[0]
 	app.Use(cors.New(cors.Config{AllowOrigins: service.corsOrigin, AllowMethods: "GET,POST,PUT,DELETE,OPTIONS", AllowHeaders: "Content-Type", AllowCredentials: true}))
+	app.Get("/api/v1/home", service.homeArchive)
+	app.Get("/api/v1/gallery-items", service.publicGalleryItems)
 	app.Get("/api/v1/service-status", service.serviceStatus)
 	app.Get("/api/v1/github", service.githubActivity)
 	app.Get("/api/v1/projects", service.publicProjects)

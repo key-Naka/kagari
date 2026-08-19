@@ -105,11 +105,7 @@ func sortedTracks(tracks []track) {
 	})
 }
 
-func (service appServices) publicTracks(c *fiber.Ctx) error {
-	tracks, err := service.tracks.List(c.Context())
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "list tracks"})
-	}
+func enabledTracks(tracks []track) []track {
 	enabled := make([]track, 0, len(tracks))
 	for _, value := range tracks {
 		if value.Enabled {
@@ -117,6 +113,15 @@ func (service appServices) publicTracks(c *fiber.Ctx) error {
 		}
 	}
 	sortedTracks(enabled)
+	return enabled
+}
+
+func (service appServices) publicTracks(c *fiber.Ctx) error {
+	tracks, err := service.tracks.List(c.Context())
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "list tracks"})
+	}
+	enabled := enabledTracks(tracks)
 	response := make([]publicTrackResponse, 0, len(enabled))
 	for _, value := range enabled {
 		response = append(response, service.publicTrack(value))

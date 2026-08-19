@@ -1,4 +1,14 @@
 <script setup lang="ts">
+import { parseGalleryItems } from '~/utils/gallery-items'
+
+const runtimeConfig = useRuntimeConfig()
+const apiBase = runtimeConfig.public.apiBase.replace(/\/$/, '')
+const { data: seededAlbumItems } = await useAsyncData('gallery-items', async () => {
+  const items = parseGalleryItems(await $fetch<unknown>(`${apiBase}/api/v1/gallery-items`))
+  if (!items) throw new Error('invalid gallery item response')
+  return items
+}, { default: () => [] })
+
 function createSeedArtwork(colors: readonly [string, string, string]): string {
   const [shadow, middle, light] = colors
   const svg = `
@@ -27,25 +37,10 @@ function createSeedArtwork(colors: readonly [string, string, string]): string {
   return `data:image/svg+xml,${encodeURIComponent(svg)}`
 }
 
-const seededAlbumItems = [
-  { id: 'A-01', title: 'Violet Wake', note: 'afterimage / 00:14', alt: '紫色光晕穿过深色轨道的抽象影像', year: '2026', anchorX: 0.04, anchorY: 0.08, width: '12vw', aspectRatio: '4 / 5', colors: ['#100f18', '#352157', '#9f7aea'] },
-  { id: 'A-02', title: 'Ash Meridian', note: 'north line / 04:20', alt: '灰白地平线与黑色天幕形成的抽象影像', year: '2025', anchorX: 0.27, anchorY: 0.16, width: '15vw', aspectRatio: '3 / 2', colors: ['#111113', '#39373b', '#b9a78c'] },
-  { id: 'A-03', title: 'Nocturne Gate', note: 'threshold / 11:03', alt: '幽蓝门廊悬浮于夜色中的抽象影像', year: '2026', anchorX: 0.54, anchorY: 0.05, width: '11vw', aspectRatio: '1 / 1', colors: ['#071014', '#153647', '#5c90a8'] },
-  { id: 'A-04', title: 'Ember Index', note: 'catalogue / 09:17', alt: '暗红余烬在黑色档案纹理中发光的抽象影像', year: '2024', anchorX: 0.79, anchorY: 0.2, width: '13vw', aspectRatio: '4 / 5', colors: ['#160c0f', '#53212a', '#c17362'] },
-  { id: 'A-05', title: 'Silver Static', note: 'signal loss / 02:41', alt: '银色静电划过墨黑表面的抽象影像', year: '2025', anchorX: 0.98, anchorY: 0.04, width: '10vw', aspectRatio: '3 / 4', colors: ['#0b0c0f', '#292d35', '#a7adba'] },
-  { id: 'A-06', title: 'Moss Reliquary', note: 'sealed / 18:08', alt: '墨绿光斑围绕古老容器的抽象影像', year: '2023', anchorX: 0.12, anchorY: 0.53, width: '14vw', aspectRatio: '3 / 2', colors: ['#09100d', '#17372c', '#6e9d78'] },
-  { id: 'A-07', title: 'Quiet Orbit', note: 'drift / 07:33', alt: '苍白轨道环绕紫黑核心的抽象影像', year: '2026', anchorX: 0.39, anchorY: 0.48, width: '12vw', aspectRatio: '1 / 1', colors: ['#0f0c16', '#302248', '#8b73aa'] },
-  { id: 'A-08', title: 'Cinder Bloom', note: 'specimen / 12:56', alt: '金色余烬如花朵在暗处展开的抽象影像', year: '2024', anchorX: 0.68, anchorY: 0.56, width: '16vw', aspectRatio: '16 / 10', colors: ['#130f09', '#4a311b', '#c59a59'] },
-  { id: 'A-09', title: 'Veiled Current', note: 'channel / 03:02', alt: '青蓝水流被薄雾遮蔽的抽象影像', year: '2025', anchorX: 0.93, anchorY: 0.47, width: '11vw', aspectRatio: '4 / 5', colors: ['#071113', '#15333a', '#5e9295'] },
-  { id: 'A-10', title: 'Obsidian Choir', note: 'resonance / 21:10', alt: '多重紫色回声穿过黑曜石平面的抽象影像', year: '2026', anchorX: 0.02, anchorY: 0.92, width: '11vw', aspectRatio: '1 / 1', colors: ['#0b0910', '#24152f', '#765189'] },
-  { id: 'A-11', title: 'Pale Ceremony', note: 'room nine / 05:44', alt: '象牙白光柱排列成仪式空间的抽象影像', year: '2023', anchorX: 0.48, anchorY: 0.9, width: '13vw', aspectRatio: '3 / 2', colors: ['#11100f', '#45403a', '#bdb19f'] },
-  { id: 'A-12', title: 'Last Signal', note: 'terminal / 23:59', alt: '玫红信号在深夜地平线上消退的抽象影像', year: '2025', anchorX: 0.98, anchorY: 0.94, width: '12vw', aspectRatio: '4 / 5', colors: ['#130a10', '#401b31', '#a85b83'] },
-] as const
-
-const albumItems = seededAlbumItems.map(item => ({
+const albumItems = computed(() => seededAlbumItems.value.map(item => ({
   ...item,
   src: createSeedArtwork(item.colors),
-}))
+})))
 
 useSeoMeta({
   title: '无界相册 · Kagari',

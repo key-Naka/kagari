@@ -48,7 +48,7 @@ describe('公开 Service Status 路由契约', () => {
   it('首页包含 /status 公开导航入口', async () => {
     const source = await readFrontendFile('pages/index.vue')
 
-    expect(source).toContain('to="/status"')
+    expect(source).toContain("route: '/status'")
   })
 
   it('不再保留旧的 /service-status 页面文件', async () => {

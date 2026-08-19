@@ -291,11 +291,7 @@ func sortedProjects(projects []portfolioProject) {
 	})
 }
 
-func (service appServices) publicProjects(c *fiber.Ctx) error {
-	projects, err := service.projects.List(c.Context())
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "list portfolio projects"})
-	}
+func publishedProjects(projects []portfolioProject) []portfolioProject {
 	published := make([]portfolioProject, 0, len(projects))
 	for _, project := range projects {
 		if project.Status == projectStatusPublished {
@@ -303,6 +299,15 @@ func (service appServices) publicProjects(c *fiber.Ctx) error {
 		}
 	}
 	sortedProjects(published)
+	return published
+}
+
+func (service appServices) publicProjects(c *fiber.Ctx) error {
+	projects, err := service.projects.List(c.Context())
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "list portfolio projects"})
+	}
+	published := publishedProjects(projects)
 	response := make([]publicProjectResponse, 0, len(published))
 	for _, project := range published {
 		value, err := publicProject(project)
