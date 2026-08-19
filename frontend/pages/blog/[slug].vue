@@ -5,6 +5,7 @@ interface PublicPostDetail {
   title: string
   slug: string
   summary: string
+  shareImageUrl: string
   tags: string[]
   publishedAt: string
   content: string
@@ -42,6 +43,13 @@ const errorMessage = computed(() => (
   error.value instanceof Error ? error.value.message : '文章暂时无法获取。'
 ))
 
+usePublicSeo({
+  title: () => data.value ? `${data.value.title} · 博客 · Kagari` : '博客文章 · Kagari',
+  description: () => data.value?.summary ?? '阅读 Kagari 的博客文章与公开技术记录。',
+  image: () => data.value?.shareImageUrl,
+  type: 'article',
+})
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
@@ -63,6 +71,7 @@ function parsePostDetail(value: unknown): PublicPostDetail | null {
     typeof value.title !== 'string'
     || typeof value.slug !== 'string'
     || typeof value.summary !== 'string'
+    || typeof value.shareImageUrl !== 'string'
     || tags === null
     || typeof value.publishedAt !== 'string'
     || typeof value.content !== 'string'
@@ -73,6 +82,7 @@ function parsePostDetail(value: unknown): PublicPostDetail | null {
     title: value.title,
     slug: value.slug,
     summary: value.summary,
+    shareImageUrl: value.shareImageUrl,
     tags,
     publishedAt: value.publishedAt,
     content: value.content,

@@ -195,6 +195,11 @@ async function refreshStatus(): Promise<void> {
 onMounted(() => {
   void refreshStatus()
 })
+
+usePublicSeo({
+  title: '服务状态 · Kagari',
+  description: '查看 Kagari 公开服务的应用状态与经过脱敏处理的基础设施指标。',
+})
 </script>
 
 <template>

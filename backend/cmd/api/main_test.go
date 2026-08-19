@@ -521,6 +521,13 @@ func TestAdminSessionAuthenticationAndSiteConfiguration(t *testing.T) {
 	})
 }
 
+func TestDefaultSiteConfigurationUsesChineseSearchTitle(t *testing.T) {
+	configuration := defaultSiteConfiguration()
+	if configuration.SiteTitle != "Kagari · 全栈工程师与独立创作者" {
+		t.Errorf("default site title = %q, want Chinese production title", configuration.SiteTitle)
+	}
+}
+
 func TestPortfolioProjectsAreManagedPrivatelyAndPublishedPublicly(t *testing.T) {
 	app, _, _ := newTestApp(t)
 

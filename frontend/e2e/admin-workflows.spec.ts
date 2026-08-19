@@ -294,10 +294,12 @@ test('管理员完成作品、文章与站点配置关键操作', async ({ page 
   await page.getByLabel('标题').fill('Building the Archive')
   await page.getByLabel('稳定 slug').fill('building-the-archive')
   await page.getByLabel('摘要').fill('从边界到界面的记录。')
+  await page.getByLabel('分享封面 HTTPS 地址').fill('https://cdn.example.com/building-the-archive.webp')
   await page.getByLabel('Markdown 内容').fill('# Archive')
   await page.getByLabel('状态').selectOption('published')
   await page.getByRole('button', { name: '创建文章' }).click()
   await expect(page.getByRole('status')).toContainText('文章已创建')
+  expect(posts).toContainEqual(expect.objectContaining({ shareImageUrl: 'https://cdn.example.com/building-the-archive.webp' }))
 
   await page.goto('/admin')
   await page.getByLabel('站点标题').fill('Kagari Archive')

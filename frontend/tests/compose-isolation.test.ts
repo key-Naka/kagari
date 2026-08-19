@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 
 describe('Compose 服务隔离 seam', () => {
   it('将宿主机和 Docker 权限限制为各自唯一的私网代理服务', async () => {
-    const compose = await readFile(resolve(import.meta.dirname, '../../docker-compose.yml'), 'utf8')
+    const compose = (await readFile(resolve(import.meta.dirname, '../../docker-compose.yml'), 'utf8')).replaceAll('\r\n', '\n')
     const serviceBlock = (name: string) => {
       const match = compose.match(new RegExp(`^  ${name}:\\n([\\s\\S]*?)(?=^  [a-z][a-z-]*:|^networks:)`, 'm'))
       expect(match, `缺少 ${name} 服务定义`).not.toBeNull()
@@ -20,7 +20,7 @@ describe('Compose 服务隔离 seam', () => {
     expect(backend).toContain('"${BACKEND_PORT:-127.0.0.1:18080}:8080"')
     expect(backend).toContain('HOST_METRICS_URL: ${HOST_METRICS_URL:-http://host-metrics:8090}')
     expect(backend).toContain('STATUS_HTTP_URL: ${STATUS_HTTP_URL:-http://frontend:3000/}')
-    expect(backend).toContain('host-metrics:\n        condition: service_started')
+    expect(backend).toContain('host-metrics:\n        condition: service_healthy')
     expect(backend).not.toMatch(/^    volumes:/m)
     expect(backend).not.toMatch(/\/var\/run\/docker\.sock|\/host(?:\/|:)/)
     expect(backend).toContain('read_only: true')

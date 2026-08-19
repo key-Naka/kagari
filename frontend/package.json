@@ -8,6 +8,7 @@
     "preview": "nuxt preview",
     "typecheck": "nuxt typecheck",
     "test": "vitest run --config vitest.config.ts",
+    "verify:production": "node scripts/verify-production.mjs",
     "test:e2e": "npm run build && playwright test"
   },
   "dependencies": {

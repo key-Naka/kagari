@@ -78,7 +78,7 @@ function formatDuration(milliseconds: number): string {
   return `${Math.floor(totalSeconds / 60)}:${String(totalSeconds % 60).padStart(2, '0')}`
 }
 
-useSeoMeta({
+usePublicSeo({
   title: '音乐档案 · Kagari',
   description: '聆听 Kagari 收录的独立音乐作品。',
 })

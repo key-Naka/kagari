@@ -13,6 +13,7 @@ EXPOSE 8080
 ENTRYPOINT ["/usr/local/bin/kagari-api"]
 
 FROM alpine:3.22 AS host-metrics
+RUN apk add --no-cache wget ca-certificates
 COPY --from=build /out/kagari-host-metrics /usr/local/bin/kagari-host-metrics
 USER 65532:65532
 EXPOSE 8090

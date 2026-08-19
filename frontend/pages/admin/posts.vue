@@ -10,6 +10,7 @@ interface AdminPost {
   title: string
   slug: string
   summary: string
+  shareImageUrl: string
   content: string
   tags: string[]
   status: PostStatus
@@ -20,6 +21,7 @@ interface PostForm {
   title: string
   slug: string
   summary: string
+  shareImageUrl: string
   content: string
   tags: string
   status: PostStatus
@@ -50,6 +52,7 @@ function newPostForm(): PostForm {
     title: '',
     slug: '',
     summary: '',
+    shareImageUrl: '',
     content: '',
     tags: '',
     status: 'draft',
@@ -108,6 +111,7 @@ function startEdit(post: AdminPost): void {
     title: post.title,
     slug: post.slug,
     summary: post.summary,
+    shareImageUrl: post.shareImageUrl,
     content: post.content,
     tags: post.tags.join(', '),
     status: post.status,
@@ -238,6 +242,7 @@ onMounted(loadPosts)
               <label class="block text-sm font-medium">稳定 slug<input v-model.trim="form.slug" required pattern="[a-z0-9]+(-[a-z0-9]+)*" maxlength="160" class="mt-2 w-full border border-zinc-700 bg-zinc-950 px-3 py-2 font-mono outline-none transition focus:border-emerald-300" /></label>
             </div>
             <label class="block text-sm font-medium">摘要<textarea v-model.trim="form.summary" required maxlength="600" rows="3" class="mt-2 w-full resize-y border border-zinc-700 bg-zinc-950 px-3 py-2 leading-6 outline-none transition focus:border-emerald-300" /></label>
+            <label class="block text-sm font-medium">分享封面 HTTPS 地址<input v-model.trim="form.shareImageUrl" type="url" inputmode="url" maxlength="2048" class="mt-2 w-full border border-zinc-700 bg-zinc-950 px-3 py-2 outline-none transition focus:border-emerald-300" placeholder="https://cdn.example.com/share.webp" /><span class="mt-2 block text-xs font-normal text-zinc-500">留空时使用站点默认分享封面；可从媒体库复制公开地址。</span></label>
             <label class="block text-sm font-medium">Markdown 内容<textarea v-model="form.content" required maxlength="100000" rows="18" class="mt-2 w-full resize-y border border-zinc-700 bg-zinc-950 px-3 py-2 font-mono text-sm leading-6 outline-none transition focus:border-emerald-300" /></label>
             <div class="grid gap-5 sm:grid-cols-2">
               <label class="block text-sm font-medium">标签<input v-model="form.tags" class="mt-2 w-full border border-zinc-700 bg-zinc-950 px-3 py-2 outline-none transition focus:border-emerald-300" placeholder="Go, Vue" /></label>

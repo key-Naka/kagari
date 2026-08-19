@@ -37,6 +37,13 @@ const errorMessage = computed(() => (
   error.value instanceof Error ? error.value.message : '作品暂时无法获取。'
 ))
 
+usePublicSeo({
+  title: () => data.value ? `${data.value.title} · 作品 · Kagari` : '作品详情 · Kagari',
+  description: () => data.value?.description ?? '阅读 Kagari 的作品详情、技术选择与项目入口。',
+  image: () => data.value?.coverUrl,
+  type: 'article',
+})
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }

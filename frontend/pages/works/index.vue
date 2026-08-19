@@ -81,6 +81,11 @@ function parseProjectList(value: unknown): PublicProject[] | null {
   const projects = value.map(parseProject)
   return projects.every((project): project is PublicProject => project !== null) ? projects : null
 }
+
+usePublicSeo({
+  title: '作品档案 · Kagari',
+  description: '浏览 Kagari 已发布的工程与界面作品，以及对应的技术、网站和源码入口。',
+})
 </script>
 
 <template>

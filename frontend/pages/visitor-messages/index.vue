@@ -31,14 +31,9 @@ const { data: messages, status, error, refresh } = await useFetch<PublicVisitorM
   default: () => [],
 })
 
-useHead({
+usePublicSeo({
   title: '访客留言 · Kagari',
-  meta: [
-    { name: 'description', content: '向 Kagari 的公开档案投递一条 Visitor Message。昵称与邮箱均可选，邮箱永不公开。' },
-    { property: 'og:title', content: '访客留言 · Kagari' },
-    { property: 'og:description', content: '读取公开讯号，或向这份单作者档案留下你的讯息。' },
-    { name: 'twitter:card', content: 'summary' },
-  ],
+  description: '向 Kagari 的公开档案投递一条 Visitor Message；昵称与邮箱均可选，邮箱永不公开。',
 })
 
 function displayName(message: PublicVisitorMessage): string {

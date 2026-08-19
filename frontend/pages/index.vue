@@ -33,14 +33,10 @@ const archiveModules = computed<HomeArchiveModule[]>(() => [
   { key: 'visitor-messages', index: '07', label: '访客留言', route: '/visitor-messages', eyebrow: 'OPEN SIGNALS', ...data.value.visitorMessages },
 ])
 
-useSeoMeta({
+usePublicSeo({
   title: () => siteConfig.value.siteTitle,
   description: () => siteConfig.value.seoSummary,
-  ogTitle: () => siteConfig.value.siteTitle,
-  ogDescription: () => siteConfig.value.seoSummary,
-  ogImage: () => siteConfig.value.shareImageUrl || undefined,
-  twitterCard: 'summary_large_image',
-  twitterImage: () => siteConfig.value.shareImageUrl || undefined,
+  image: () => siteConfig.value.shareImageUrl || undefined,
 })
 </script>
 

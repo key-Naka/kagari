@@ -79,6 +79,6 @@ describe('管理认证路由契约', () => {
     expect(consolePage).toContain("requestApi('/api/v1/admin/site-config'")
     expect(homePage).toContain('/api/v1/site-config')
     expect(homePage).toContain('title: () => siteConfig.value.siteTitle')
-    expect(homePage).toContain('ogImage: () => siteConfig.value.shareImageUrl || undefined')
+    expect(homePage).toContain('image: () => siteConfig.value.shareImageUrl || undefined')
   })
 })

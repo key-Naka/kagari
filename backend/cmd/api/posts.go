@@ -46,16 +46,17 @@ var (
 )
 
 type blogPost struct {
-	ID          uint       `gorm:"primaryKey"`
-	Title       string     `gorm:"size:160;not null"`
-	Slug        string     `gorm:"size:160;uniqueIndex;not null"`
-	Summary     string     `gorm:"type:text;not null"`
-	Content     string     `gorm:"type:longtext;not null"`
-	TagsJSON    string     `gorm:"column:tags;type:json;not null"`
-	Status      string     `gorm:"size:16;not null"`
-	PublishedAt *time.Time `gorm:"index"`
-	CreatedAt   time.Time  `gorm:"not null"`
-	UpdatedAt   time.Time  `gorm:"not null"`
+	ID            uint       `gorm:"primaryKey"`
+	Title         string     `gorm:"size:160;not null"`
+	Slug          string     `gorm:"size:160;uniqueIndex;not null"`
+	Summary       string     `gorm:"type:text;not null"`
+	ShareImageURL string     `gorm:"size:2048;not null;default:''"`
+	Content       string     `gorm:"type:longtext;not null"`
+	TagsJSON      string     `gorm:"column:tags;type:json;not null"`
+	Status        string     `gorm:"size:16;not null"`
+	PublishedAt   *time.Time `gorm:"index"`
+	CreatedAt     time.Time  `gorm:"not null"`
+	UpdatedAt     time.Time  `gorm:"not null"`
 }
 
 type postRepository interface {
@@ -130,20 +131,22 @@ func (repository gormPostRepository) Delete(ctx context.Context, id uint) error 
 }
 
 type postRequest struct {
-	Title   string   `json:"title"`
-	Slug    string   `json:"slug"`
-	Summary string   `json:"summary"`
-	Content string   `json:"content"`
-	Tags    []string `json:"tags"`
-	Status  string   `json:"status"`
+	Title         string   `json:"title"`
+	Slug          string   `json:"slug"`
+	Summary       string   `json:"summary"`
+	ShareImageURL string   `json:"shareImageUrl"`
+	Content       string   `json:"content"`
+	Tags          []string `json:"tags"`
+	Status        string   `json:"status"`
 }
 
 type publicPostResponse struct {
-	Title       string   `json:"title"`
-	Slug        string   `json:"slug"`
-	Summary     string   `json:"summary"`
-	Tags        []string `json:"tags"`
-	PublishedAt string   `json:"publishedAt"`
+	Title         string   `json:"title"`
+	Slug          string   `json:"slug"`
+	Summary       string   `json:"summary"`
+	ShareImageURL string   `json:"shareImageUrl"`
+	Tags          []string `json:"tags"`
+	PublishedAt   string   `json:"publishedAt"`
 }
 
 type publicPostDetailResponse struct {
@@ -173,6 +176,7 @@ func postFromRequest(request postRequest) (blogPost, error) {
 	request.Title = strings.TrimSpace(request.Title)
 	request.Slug = strings.TrimSpace(request.Slug)
 	request.Summary = strings.TrimSpace(request.Summary)
+	request.ShareImageURL = strings.TrimSpace(request.ShareImageURL)
 	request.Content = strings.TrimSpace(request.Content)
 	request.Status = strings.TrimSpace(request.Status)
 
@@ -187,6 +191,9 @@ func postFromRequest(request postRequest) (blogPost, error) {
 	}
 	if utf8.RuneCountInString(request.Summary) == 0 || utf8.RuneCountInString(request.Summary) > 600 {
 		return blogPost{}, errors.New("summary must contain between 1 and 600 characters")
+	}
+	if request.ShareImageURL != "" && !validHTTPSURL(request.ShareImageURL) {
+		return blogPost{}, errors.New("shareImageUrl must be an HTTPS URL")
 	}
 	if utf8.RuneCountInString(request.Content) == 0 || utf8.RuneCountInString(request.Content) > 100000 {
 		return blogPost{}, errors.New("content must contain between 1 and 100000 characters")
@@ -203,12 +210,13 @@ func postFromRequest(request postRequest) (blogPost, error) {
 		return blogPost{}, fmt.Errorf("encode tags: %w", err)
 	}
 	return blogPost{
-		Title:    request.Title,
-		Slug:     request.Slug,
-		Summary:  request.Summary,
-		Content:  request.Content,
-		TagsJSON: string(encodedTags),
-		Status:   request.Status,
+		Title:         request.Title,
+		Slug:          request.Slug,
+		Summary:       request.Summary,
+		ShareImageURL: request.ShareImageURL,
+		Content:       request.Content,
+		TagsJSON:      string(encodedTags),
+		Status:        request.Status,
 	}, nil
 }
 
@@ -250,11 +258,12 @@ func publicPost(post blogPost) (publicPostResponse, error) {
 		return publicPostResponse{}, err
 	}
 	return publicPostResponse{
-		Title:       post.Title,
-		Slug:        post.Slug,
-		Summary:     post.Summary,
-		Tags:        tags,
-		PublishedAt: post.PublishedAt.UTC().Format(time.RFC3339),
+		Title:         post.Title,
+		Slug:          post.Slug,
+		Summary:       post.Summary,
+		ShareImageURL: post.ShareImageURL,
+		Tags:          tags,
+		PublishedAt:   post.PublishedAt.UTC().Format(time.RFC3339),
 	}, nil
 }
 
@@ -282,12 +291,13 @@ func adminPost(post blogPost) (adminPostResponse, error) {
 	return adminPostResponse{
 		ID: post.ID,
 		postRequest: postRequest{
-			Title:   post.Title,
-			Slug:    post.Slug,
-			Summary: post.Summary,
-			Content: post.Content,
-			Tags:    tags,
-			Status:  post.Status,
+			Title:         post.Title,
+			Slug:          post.Slug,
+			Summary:       post.Summary,
+			ShareImageURL: post.ShareImageURL,
+			Content:       post.Content,
+			Tags:          tags,
+			Status:        post.Status,
 		},
 		PublishedAt: publishedAt,
 	}, nil

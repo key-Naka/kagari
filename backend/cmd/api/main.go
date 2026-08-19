@@ -546,7 +546,7 @@ type publicSiteConfiguration struct {
 
 func defaultSiteConfiguration() publicSiteConfiguration {
 	return publicSiteConfiguration{
-		SiteTitle:  "Kagari",
+		SiteTitle:  "Kagari · 全栈工程师与独立创作者",
 		SEOSummary: "Kagari 的作品导向首页：浏览全栈工程、Blog Post、Track、GitHub、相册、服务状态与 Visitor Message 档案。",
 	}
 }

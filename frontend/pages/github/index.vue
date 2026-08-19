@@ -175,6 +175,11 @@ function formatDateTime(value: string): string {
 async function refreshGitHubActivity(): Promise<void> {
   await refresh()
 }
+
+usePublicSeo({
+  title: 'GitHub 档案 · Kagari',
+  description: '查看 Kagari 的公开贡献热力、近期工程活动与精选 GitHub 仓库。',
+})
 </script>
 
 <template>

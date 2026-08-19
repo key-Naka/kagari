@@ -160,6 +160,11 @@ async function setFilters(tag = '', archive = ''): Promise<void> {
   if (archive) query.archive = archive
   await navigateTo({ path: '/blog', query })
 }
+
+usePublicSeo({
+  title: '写作档案 · Kagari',
+  description: '阅读 Kagari 关于系统边界、界面设计与独立创作的已发布 Blog Post。',
+})
 </script>
 
 <template>

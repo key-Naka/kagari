@@ -41,6 +41,11 @@ const partialHomeResponse = {
 
 const readyResponses: Record<string, unknown> = {
   '/api/v1/home': readyHomeResponse,
+  '/api/v1/site-config': {
+    siteTitle: 'Kagari · 全栈工程师与独立创作者',
+    seoSummary: 'Kagari 的作品导向首页：浏览全栈工程、Blog Post、Track、GitHub、相册、服务状态与 Visitor Message 档案。',
+    shareImageUrl: '',
+  },
   '/api/v1/projects': [{
     title: 'Kagari Core',
     slug: 'kagari-core',
@@ -53,13 +58,35 @@ const readyResponses: Record<string, unknown> = {
     websiteUrl: 'https://example.com',
     repositoryUrl: 'https://github.com/key-Naka/kagari',
   }],
+  '/api/v1/projects/kagari-core': {
+    title: 'Kagari Core',
+    slug: 'kagari-core',
+    coverUrl: 'https://cdn.example.com/kagari.webp',
+    description: '一套由 Nuxt 与 Go 共同驱动的公开档案系统。',
+    technologies: ['Nuxt', 'Go'],
+    types: ['Web'],
+    featured: true,
+    sortOrder: 0,
+    websiteUrl: 'https://example.com',
+    repositoryUrl: 'https://github.com/key-Naka/kagari',
+  },
   '/api/v1/posts': [{
     title: 'Night Index',
     slug: 'night-index',
     summary: '关于系统边界与夜间创作的最新记录。',
+    shareImageUrl: 'https://cdn.example.com/night-index.webp',
     tags: ['architecture'],
     publishedAt: '2026-08-19T08:00:00Z',
   }],
+  '/api/v1/posts/night-index': {
+    title: 'Night Index',
+    slug: 'night-index',
+    summary: '关于系统边界与夜间创作的最新记录。',
+    shareImageUrl: 'https://cdn.example.com/night-index.webp',
+    tags: ['architecture'],
+    publishedAt: '2026-08-19T08:00:00Z',
+    content: '<p>夜间档案正文。</p>',
+  },
   '/api/v1/tracks': [{
     id: 1,
     title: 'Ash Choir',
@@ -144,6 +171,107 @@ test('home presents API-backed highlights and every independent archive entry', 
     await expect(page.getByRole('link', { name: `进入${label}档案` })).toBeVisible()
   }
 
+})
+
+test('home SSR document exposes complete Chinese search and share metadata', async ({ page }) => {
+  apiMode = 'ready'
+  await page.goto('/')
+
+  await expect(page).toHaveTitle('Kagari · 全栈工程师与独立创作者')
+  await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN')
+  await expect(page.locator('link[rel="canonical"]')).toHaveAttribute('href', 'https://ykagari.top/')
+  await expect(page.locator('meta[name="description"]')).toHaveAttribute('content', /Kagari 的作品导向首页/)
+  await expect(page.locator('meta[property="og:title"]')).toHaveAttribute('content', 'Kagari · 全栈工程师与独立创作者')
+  await expect(page.locator('meta[property="og:description"]')).toHaveAttribute('content', /Kagari 的作品导向首页/)
+  await expect(page.locator('meta[property="og:url"]')).toHaveAttribute('content', 'https://ykagari.top/')
+  await expect(page.locator('meta[property="og:type"]')).toHaveAttribute('content', 'website')
+  await expect(page.locator('meta[property="og:image"]')).toHaveAttribute('content', 'https://ykagari.top/share-card.png')
+  await expect(page.locator('meta[name="twitter:card"]')).toHaveAttribute('content', 'summary_large_image')
+  await expect(page.locator('meta[name="twitter:title"]')).toHaveAttribute('content', 'Kagari · 全栈工程师与独立创作者')
+  await expect(page.locator('meta[name="twitter:description"]')).toHaveAttribute('content', /Kagari 的作品导向首页/)
+  await expect(page.locator('meta[name="twitter:image"]')).toHaveAttribute('content', 'https://ykagari.top/share-card.png')
+})
+
+test('content metadata is present in the SSR response before hydration', async ({ request }) => {
+  const response = await request.get('/works/kagari-core')
+  expect(response.ok()).toBe(true)
+  const html = await response.text()
+
+  expect(html).toMatch(/<html\s+lang="zh-CN"/)
+  expect(html).toContain('<title>Kagari Core · 作品 · Kagari</title>')
+  expect(html).toContain('name="description" content="一套由 Nuxt 与 Go 共同驱动的公开档案系统。"')
+  expect(html).toContain('rel="canonical" href="https://ykagari.top/works/kagari-core"')
+  expect(html).toContain('property="og:image" content="https://cdn.example.com/kagari.webp"')
+  expect(html).toContain('name="twitter:card" content="summary_large_image"')
+})
+
+test('every independent public module exposes complete route-specific metadata', async ({ page }) => {
+  apiMode = 'ready'
+  const routes = [
+    ['/works', '作品档案 · Kagari'],
+    ['/blog', '写作档案 · Kagari'],
+    ['/music', '音乐档案 · Kagari'],
+    ['/github', 'GitHub 档案 · Kagari'],
+    ['/gallery', '无界相册 · Kagari'],
+    ['/status', '服务状态 · Kagari'],
+    ['/visitor-messages', '访客留言 · Kagari'],
+  ] as const
+
+  for (const [route, title] of routes) {
+    await page.goto(route)
+    await expect(page).toHaveTitle(title)
+    await expect(page.locator('link[rel="canonical"]')).toHaveAttribute('href', `https://ykagari.top${route}`)
+    await expect(page.locator('meta[name="description"]')).toHaveAttribute('content', /[\u3400-\u9fff]/)
+    await expect(page.locator('meta[property="og:title"]')).toHaveAttribute('content', title)
+    await expect(page.locator('meta[property="og:url"]')).toHaveAttribute('content', `https://ykagari.top${route}`)
+    await expect(page.locator('meta[property="og:image"]')).toHaveAttribute('content', 'https://ykagari.top/share-card.png')
+    await expect(page.locator('meta[name="twitter:title"]')).toHaveAttribute('content', title)
+    await expect(page.locator('meta[name="twitter:description"]')).toHaveAttribute('content', /[\u3400-\u9fff]/)
+    await expect(page.locator('meta[name="twitter:image"]')).toHaveAttribute('content', 'https://ykagari.top/share-card.png')
+  }
+})
+
+test('Portfolio Project detail uses its summary and cover for sharing metadata', async ({ page }) => {
+  apiMode = 'ready'
+  await page.goto('/works/kagari-core')
+
+  await expect(page).toHaveTitle('Kagari Core · 作品 · Kagari')
+  await expect(page.locator('link[rel="canonical"]')).toHaveAttribute('href', 'https://ykagari.top/works/kagari-core')
+  await expect(page.locator('meta[name="description"]')).toHaveAttribute('content', '一套由 Nuxt 与 Go 共同驱动的公开档案系统。')
+  await expect(page.locator('meta[property="og:type"]')).toHaveAttribute('content', 'article')
+  await expect(page.locator('meta[property="og:image"]')).toHaveAttribute('content', 'https://cdn.example.com/kagari.webp')
+  await expect(page.locator('meta[name="twitter:image"]')).toHaveAttribute('content', 'https://cdn.example.com/kagari.webp')
+})
+
+test('Blog Post detail uses its summary and configured sharing cover', async ({ page }) => {
+  await page.goto('/blog/night-index')
+
+  await expect(page).toHaveTitle('Night Index · 博客 · Kagari')
+  await expect(page.locator('link[rel="canonical"]')).toHaveAttribute('href', 'https://ykagari.top/blog/night-index')
+  await expect(page.locator('meta[name="description"]')).toHaveAttribute('content', '关于系统边界与夜间创作的最新记录。')
+  await expect(page.locator('meta[property="og:type"]')).toHaveAttribute('content', 'article')
+  await expect(page.locator('meta[property="og:image"]')).toHaveAttribute('content', 'https://cdn.example.com/night-index.webp')
+  await expect(page.locator('meta[name="twitter:image"]')).toHaveAttribute('content', 'https://cdn.example.com/night-index.webp')
+})
+
+test('robots and sitemap expose indexable public routes without administrator pages', async ({ request }) => {
+  const robotsResponse = await request.get('/robots.txt')
+  expect(robotsResponse.ok()).toBe(true)
+  expect(robotsResponse.headers()['content-type']).toContain('text/plain')
+  const robots = await robotsResponse.text()
+  expect(robots).toContain('User-agent: *')
+  expect(robots).toContain('Allow: /')
+  expect(robots).toContain('Disallow: /admin')
+  expect(robots).toContain('Sitemap: https://ykagari.top/sitemap.xml')
+
+  const sitemapResponse = await request.get('/sitemap.xml')
+  expect(sitemapResponse.ok()).toBe(true)
+  expect(sitemapResponse.headers()['content-type']).toContain('application/xml')
+  const sitemap = await sitemapResponse.text()
+  for (const location of ['/', '/works', '/works/kagari-core', '/blog', '/blog/night-index', '/music', '/github', '/gallery', '/status', '/visitor-messages']) {
+    expect(sitemap).toContain(`<loc>https://ykagari.top${location}</loc>`)
+  }
+  expect(sitemap).not.toContain('/admin')
 })
 
 for (const [label, route] of [

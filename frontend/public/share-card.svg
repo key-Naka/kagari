@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title description">
+  <title id="title">Kagari 公开档案</title>
+  <desc id="description">Kagari 的系统、界面、文字与声音档案分享封面</desc>
+  <defs>
+    <radialGradient id="violet" cx="78%" cy="12%" r="72%">
+      <stop offset="0" stop-color="#5b21b6" stop-opacity=".62"/>
+      <stop offset="1" stop-color="#09090b" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="line" x1="0" x2="1">
+      <stop stop-color="#8b5cf6"/>
+      <stop offset="1" stop-color="#d9bf81"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="#09090b"/>
+  <rect width="1200" height="630" fill="url(#violet)"/>
+  <g stroke="#ffffff" stroke-opacity=".045">
+    <path d="M0 90H1200M0 180H1200M0 270H1200M0 360H1200M0 450H1200M0 540H1200"/>
+    <path d="M120 0V630M240 0V630M360 0V630M480 0V630M600 0V630M720 0V630M840 0V630M960 0V630M1080 0V630"/>
+  </g>
+  <path d="M88 102H304" stroke="url(#line)" stroke-width="4"/>
+  <text x="88" y="286" fill="#f4f4f5" font-family="Georgia, serif" font-size="128" letter-spacing="-7">Kagari</text>
+  <text x="96" y="365" fill="#c4b5fd" font-family="monospace" font-size="24" letter-spacing="9">PUBLIC ARCHIVE</text>
+  <text x="96" y="514" fill="#a1a1aa" font-family="sans-serif" font-size="28">系统 · 界面 · 文字 · 声音</text>
+</svg>

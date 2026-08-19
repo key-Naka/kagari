@@ -97,7 +97,7 @@ func TestBlogPostsAreManagedPrivatelyAndPublishedPublicly(t *testing.T) {
 		t.Fatalf("login status = %d, want %d", loginResponse.StatusCode, fiber.StatusNoContent)
 	}
 
-	draft := `{"title":"Archive Signals","slug":"archive-signals","summary":"A short public summary.","content":"# Archive Signals\n\n**Published** writing.\n\n![Diagram](https://cdn.example.com/diagram.webp \"System diagram\")\n\n[Reference](https://example.com)\n\n[Unsafe](javascript:alert('xss'))\n\n<script>alert('xss')</script>","tags":["Go","Vue"],"status":"draft"}`
+	draft := `{"title":"Archive Signals","slug":"archive-signals","summary":"A short public summary.","shareImageUrl":"https://cdn.example.com/archive-signals.webp","content":"# Archive Signals\n\n**Published** writing.\n\n![Diagram](https://cdn.example.com/diagram.webp \"System diagram\")\n\n[Reference](https://example.com)\n\n[Unsafe](javascript:alert('xss'))\n\n<script>alert('xss')</script>","tags":["Go","Vue"],"status":"draft"}`
 	reservedSlugResponse, err := app.Test(adminRequest(fiber.MethodPost, "/api/v1/admin/posts", strings.Replace(draft, `"archive-signals"`, `"tags"`, 1)))
 	if err != nil {
 		t.Fatalf("create post with a reserved slug: %v", err)
@@ -105,6 +105,15 @@ func TestBlogPostsAreManagedPrivatelyAndPublishedPublicly(t *testing.T) {
 	reservedSlugResponse.Body.Close()
 	if reservedSlugResponse.StatusCode != fiber.StatusBadRequest {
 		t.Errorf("reserved slug status = %d, want %d", reservedSlugResponse.StatusCode, fiber.StatusBadRequest)
+	}
+
+	insecureCoverResponse, err := app.Test(adminRequest(fiber.MethodPost, "/api/v1/admin/posts", strings.Replace(draft, "https://cdn.example.com/archive-signals.webp", "http://cdn.example.com/archive-signals.webp", 1)))
+	if err != nil {
+		t.Fatalf("create post with insecure share image URL: %v", err)
+	}
+	insecureCoverResponse.Body.Close()
+	if insecureCoverResponse.StatusCode != fiber.StatusBadRequest {
+		t.Errorf("insecure share image status = %d, want %d", insecureCoverResponse.StatusCode, fiber.StatusBadRequest)
 	}
 
 	createResponse, err := app.Test(adminRequest(fiber.MethodPost, "/api/v1/admin/posts", draft))
@@ -152,7 +161,7 @@ func TestBlogPostsAreManagedPrivatelyAndPublishedPublicly(t *testing.T) {
 	if err := json.Unmarshal(body, &detail); err != nil {
 		t.Fatalf("decode public post: %v", err)
 	}
-	if detailResponse.StatusCode != fiber.StatusOK || detail.Title != "Archive Signals" || detail.PublishedAt == "" || !strings.Contains(detail.Content, "<figure>") || !strings.Contains(detail.Content, "<figcaption>System diagram</figcaption>") || !strings.Contains(detail.Content, "<strong>Published</strong>") {
+	if detailResponse.StatusCode != fiber.StatusOK || detail.Title != "Archive Signals" || detail.ShareImageURL != "https://cdn.example.com/archive-signals.webp" || detail.PublishedAt == "" || !strings.Contains(detail.Content, "<figure>") || !strings.Contains(detail.Content, "<figcaption>System diagram</figcaption>") || !strings.Contains(detail.Content, "<strong>Published</strong>") {
 		t.Errorf("public detail = %#v with status %d, want rendered published post", detail, detailResponse.StatusCode)
 	}
 	for _, unsafe := range []string{"<script", "alert('xss')", "javascript:"} {

@@ -6,11 +6,25 @@ services:
       context: ./frontend
     environment:
       NUXT_PUBLIC_API_BASE: ${NUXT_PUBLIC_API_BASE:?NUXT_PUBLIC_API_BASE is required}
+      NUXT_PUBLIC_SITE_URL: ${NUXT_PUBLIC_SITE_URL:?NUXT_PUBLIC_SITE_URL is required}
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     depends_on:
       backend:
         condition: service_healthy
     ports:
       - "${FRONTEND_PORT:-127.0.0.1:3000}:3000"
+    healthcheck:
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:3000/health" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
     networks:
       - edge
 
@@ -46,9 +60,9 @@ services:
       - ALL
     depends_on:
       host-metrics:
-        condition: service_started
+        condition: service_healthy
       docker-proxy:
-        condition: service_started
+        condition: service_healthy
       mysql:
         condition: service_healthy
       redis:
@@ -77,6 +91,12 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    healthcheck:
+      test: [ "CMD", "wget", "--quiet", "--output-document=/dev/null", "http://127.0.0.1:8090/status" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
     networks:
       - private
 
@@ -91,6 +111,11 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    healthcheck:
+      test: [ "CMD", "haproxy", "-c", "-f", "/usr/local/etc/haproxy/haproxy.cfg" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     networks:
       - private
 

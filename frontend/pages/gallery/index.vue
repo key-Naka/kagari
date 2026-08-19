@@ -42,12 +42,9 @@ const albumItems = computed(() => seededAlbumItems.value.map(item => ({
   src: item.imageUrl ?? createSeedArtwork(item.colors),
 })))
 
-useSeoMeta({
+usePublicSeo({
   title: '无界相册 · Kagari',
   description: '在 Kagari 的无限二维画布中拖拽探索有限的视觉残片。',
-  ogTitle: '无界相册 · Kagari',
-  ogDescription: '拖拽穿行于四边无缝回绕的 Album Item 档案。',
-  twitterCard: 'summary_large_image',
 })
 </script>
 
