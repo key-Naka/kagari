@@ -487,7 +487,11 @@ func TestAdminSessionAuthenticationAndSiteConfiguration(t *testing.T) {
 			t.Fatalf("session status = %d, want %d", statusResponse.StatusCode, fiber.StatusOK)
 		}
 
-		putRequest := httptest.NewRequest(fiber.MethodPut, "/api/v1/admin/site-config", strings.NewReader(`{"title":"Updated"}`))
+		putRequest := httptest.NewRequest(fiber.MethodPut, "/api/v1/admin/site-config", strings.NewReader(`{
+			"siteTitle":"Updated Kagari",
+			"seoSummary":"A public archive summary.",
+			"shareImageUrl":"https://cdn.example.com/share.webp"
+		}`))
 		putRequest.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
 		putRequest.Header.Set(fiber.HeaderCookie, sessionCookieName+"=test-session")
 		putResponse, err := app.Test(putRequest)
@@ -498,8 +502,21 @@ func TestAdminSessionAuthenticationAndSiteConfiguration(t *testing.T) {
 		if putResponse.StatusCode != fiber.StatusOK {
 			t.Fatalf("save status = %d, want %d", putResponse.StatusCode, fiber.StatusOK)
 		}
-		if configuration.configuration["title"] != "Updated" {
-			t.Errorf("saved title = %v, want Updated", configuration.configuration["title"])
+		if configuration.configuration["siteTitle"] != "Updated Kagari" {
+			t.Errorf("saved title = %v, want Updated Kagari", configuration.configuration["siteTitle"])
+		}
+
+		publicResponse, err := app.Test(httptest.NewRequest(fiber.MethodGet, "/api/v1/site-config", nil))
+		if err != nil {
+			t.Fatalf("get public site configuration: %v", err)
+		}
+		defer publicResponse.Body.Close()
+		var publicConfiguration publicSiteConfiguration
+		if err := json.NewDecoder(publicResponse.Body).Decode(&publicConfiguration); err != nil {
+			t.Fatalf("decode public site configuration: %v", err)
+		}
+		if publicConfiguration.SiteTitle != "Updated Kagari" || publicConfiguration.ShareImageURL != "https://cdn.example.com/share.webp" {
+			t.Errorf("public configuration = %#v, want saved brand fields", publicConfiguration)
 		}
 	})
 }

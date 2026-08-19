@@ -40,6 +40,10 @@ func TestHomeArchiveSummarizesPublishedPublicModules(t *testing.T) {
 				Cover: mediaRecord{ObjectKey: "media/image/2026/08/ash.webp"},
 			},
 		}},
+		albumItems: &memoryAlbumItemRepository{items: map[uint]albumItem{
+			1: {ID: 1, Title: "Published Album Item", Published: true},
+			2: {ID: 2, Title: "Draft Album Item", Published: false},
+		}},
 		visitorMessages: &memoryVisitorMessageRepository{messages: map[uint]visitorMessage{
 			1: {
 				ID: 1, Nickname: "Aya", Email: "private@example.com", Content: "Hello from the edge",
@@ -82,8 +86,8 @@ func TestHomeArchiveSummarizesPublishedPublicModules(t *testing.T) {
 	if archive.Music.Item.CoverURL != "https://cdn.example.com/media/image/2026/08/ash.webp" {
 		t.Fatalf("music cover URL = %q", archive.Music.Item.CoverURL)
 	}
-	if archive.Gallery.Availability != availabilityOperational || archive.Gallery.Count != len(seededGalleryItems) {
-		t.Fatalf("gallery = %#v, want seeded public Album Item count", archive.Gallery)
+	if archive.Gallery.Availability != availabilityOperational || archive.Gallery.Count != 1 {
+		t.Fatalf("gallery = %#v, want published Album Item count", archive.Gallery)
 	}
 	if archive.VisitorMessages.Count != 1 || archive.VisitorMessages.Item == nil {
 		t.Fatalf("visitor messages = %#v, want latest public message", archive.VisitorMessages)

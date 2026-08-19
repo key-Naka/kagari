@@ -193,6 +193,7 @@ onMounted(loadPosts)
         </div>
         <button type="button" class="border border-zinc-700 px-4 py-2 text-sm font-medium transition hover:border-zinc-300" @click="startCreate">新建文章</button>
       </header>
+      <p class="mt-5 text-sm text-zinc-400">文章图片可先在 <NuxtLink to="/admin/media" class="text-violet-300 underline underline-offset-4">媒体库</NuxtLink> 上传并复制公开地址，再插入 Markdown。</p>
 
       <p v-if="errorMessage" class="mt-6 border border-rose-400/40 bg-rose-400/10 p-4 text-sm text-rose-100" role="alert">{{ errorMessage }}</p>
       <p v-if="successMessage" class="mt-6 border border-emerald-400/40 bg-emerald-400/10 p-4 text-sm text-emerald-100" role="status">{{ successMessage }}</p>

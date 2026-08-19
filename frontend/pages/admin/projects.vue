@@ -34,24 +34,19 @@ interface ProjectForm {
   repositoryUrl: string
 }
 
-type ApiErrorPayload = { error?: string }
-
-class ApiError extends Error {
-  constructor(readonly status: number, message: string) {
-    super(message)
-  }
-}
-
-const runtimeConfig = useRuntimeConfig()
-const apiBase = runtimeConfig.public.apiBase.replace(/\/$/, '')
+const { requestApi, redirectExpiredSession } = useAdminApi()
 const projects = ref<AdminProject[]>([])
+const { uploadMedia } = useAdminMediaUpload()
 const activeProjectId = ref<number | null>(null)
+const coverFile = ref<File | null>(null)
+const coverInputKey = ref(0)
 const form = ref<ProjectForm>(newProjectForm())
 const isLoading = ref(true)
 const isSaving = ref(false)
 const deletingId = ref<number | null>(null)
 const errorMessage = ref('')
 const successMessage = ref('')
+const uploadStage = ref('')
 const isEditing = computed(() => activeProjectId.value !== null)
 
 function newProjectForm(): ProjectForm {
@@ -74,24 +69,6 @@ function splitTags(value: string): string[] {
   return value.split(',').map(tag => tag.trim()).filter(Boolean)
 }
 
-async function responseError(response: Response): Promise<string> {
-  const fallback = `请求失败（HTTP ${response.status}）。`
-  try {
-    const payload = await response.json() as ApiErrorPayload
-    return payload.error || fallback
-  } catch {
-    return fallback
-  }
-}
-
-async function requestApi(path: string, options: RequestInit = {}): Promise<Response> {
-  const response = await fetch(`${apiBase}${path}`, { ...options, credentials: 'include' })
-  if (!response.ok) {
-    throw new ApiError(response.status, await responseError(response))
-  }
-  return response
-}
-
 async function loadProjects(): Promise<void> {
   isLoading.value = true
   errorMessage.value = ''
@@ -99,10 +76,7 @@ async function loadProjects(): Promise<void> {
     const response = await requestApi('/api/v1/admin/projects')
     projects.value = await response.json() as AdminProject[]
   } catch (error) {
-    if (error instanceof ApiError && error.status === 401) {
-      await navigateTo('/admin/login?reason=session-expired')
-      return
-    }
+    if (await redirectExpiredSession(error)) return
     errorMessage.value = error instanceof Error ? error.message : '无法加载作品。'
   } finally {
     isLoading.value = false
@@ -112,12 +86,16 @@ async function loadProjects(): Promise<void> {
 function startCreate(): void {
   activeProjectId.value = null
   form.value = newProjectForm()
+  coverFile.value = null
+  coverInputKey.value += 1
   errorMessage.value = ''
   successMessage.value = ''
 }
 
 function startEdit(project: AdminProject): void {
   activeProjectId.value = project.id
+  coverFile.value = null
+  coverInputKey.value += 1
   form.value = {
     title: project.title,
     slug: project.slug,
@@ -140,14 +118,18 @@ async function saveProject(): Promise<void> {
   errorMessage.value = ''
   successMessage.value = ''
   const isCreating = activeProjectId.value === null
-  const payload = {
-    ...form.value,
-    technologies: splitTags(form.value.technologies),
-    types: splitTags(form.value.types),
-  }
   const path = activeProjectId.value === null ? '/api/v1/admin/projects' : `/api/v1/admin/projects/${activeProjectId.value}`
 
   try {
+    if (coverFile.value) {
+      const media = await uploadMedia(coverFile.value, 'image', stage => { uploadStage.value = stage })
+      form.value.coverUrl = media.publicUrl
+    }
+    const payload = {
+      ...form.value,
+      technologies: splitTags(form.value.technologies),
+      types: splitTags(form.value.types),
+    }
     await requestApi(path, {
       method: activeProjectId.value === null ? 'POST' : 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -156,14 +138,16 @@ async function saveProject(): Promise<void> {
     await loadProjects()
     activeProjectId.value = null
     form.value = newProjectForm()
-    successMessage.value = isCreating ? '作品草稿已创建。' : '作品已更新。'
+    coverFile.value = null
+    coverInputKey.value += 1
+    successMessage.value = isCreating
+      ? payload.status === 'published' ? '作品已发布。' : '作品草稿已创建。'
+      : '作品已更新。'
   } catch (error) {
-    if (error instanceof ApiError && error.status === 401) {
-      await navigateTo('/admin/login?reason=session-expired')
-      return
-    }
+    if (await redirectExpiredSession(error)) return
     errorMessage.value = error instanceof Error ? error.message : '保存作品失败。'
   } finally {
+    uploadStage.value = ''
     isSaving.value = false
   }
 }
@@ -185,10 +169,7 @@ async function deleteProject(project: AdminProject): Promise<void> {
     successMessage.value = '作品已永久删除。'
     await loadProjects()
   } catch (error) {
-    if (error instanceof ApiError && error.status === 401) {
-      await navigateTo('/admin/login?reason=session-expired')
-      return
-    }
+    if (await redirectExpiredSession(error)) return
     errorMessage.value = error instanceof Error ? error.message : '删除作品失败。'
   } finally {
     deletingId.value = null
@@ -214,6 +195,7 @@ onMounted(loadProjects)
 
       <p v-if="errorMessage" class="mt-6 border border-rose-400/40 bg-rose-400/10 p-4 text-sm text-rose-100" role="alert">{{ errorMessage }}</p>
       <p v-if="successMessage" class="mt-6 border border-emerald-400/40 bg-emerald-400/10 p-4 text-sm text-emerald-100" role="status">{{ successMessage }}</p>
+      <p v-if="uploadStage" class="mt-6 border border-violet-400/40 bg-violet-400/10 p-4 text-sm text-violet-100" role="status">{{ uploadStage }}</p>
 
       <div class="mt-8 grid gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(22rem,0.85fr)]">
         <section aria-labelledby="project-list-heading">
@@ -252,7 +234,8 @@ onMounted(loadProjects)
           <form class="mt-6 space-y-5" @submit.prevent="saveProject">
             <label class="block text-sm font-medium">标题<input v-model.trim="form.title" required maxlength="160" class="mt-2 w-full border border-zinc-700 bg-zinc-950 px-3 py-2 outline-none transition focus:border-emerald-300" /></label>
             <label class="block text-sm font-medium">稳定 slug<input v-model.trim="form.slug" required pattern="[a-z0-9]+(-[a-z0-9]+)*" maxlength="160" class="mt-2 w-full border border-zinc-700 bg-zinc-950 px-3 py-2 font-mono outline-none transition focus:border-emerald-300" /></label>
-            <label class="block text-sm font-medium">封面 HTTPS 地址<input v-model.trim="form.coverUrl" required type="url" class="mt-2 w-full border border-zinc-700 bg-zinc-950 px-3 py-2 outline-none transition focus:border-emerald-300" /></label>
+            <label class="block text-sm font-medium">封面 HTTPS 地址<input v-model.trim="form.coverUrl" :required="!coverFile" type="url" class="mt-2 w-full border border-zinc-700 bg-zinc-950 px-3 py-2 outline-none transition focus:border-emerald-300" /></label>
+            <label class="block text-sm font-medium">或上传封面图片<input :key="coverInputKey" type="file" accept="image/jpeg,image/png,image/webp,image/avif" class="mt-2 block w-full text-sm text-zinc-400 file:mr-4 file:border-0 file:bg-zinc-800 file:px-4 file:py-2 file:text-zinc-100" @change="coverFile = ($event.currentTarget as HTMLInputElement).files?.[0] ?? null" /></label>
             <label class="block text-sm font-medium">说明<textarea v-model.trim="form.description" required maxlength="6000" rows="5" class="mt-2 w-full resize-y border border-zinc-700 bg-zinc-950 px-3 py-2 leading-6 outline-none transition focus:border-emerald-300" /></label>
             <div class="grid gap-5 sm:grid-cols-2">
               <label class="block text-sm font-medium">技术标签<input v-model="form.technologies" class="mt-2 w-full border border-zinc-700 bg-zinc-950 px-3 py-2 outline-none transition focus:border-emerald-300" placeholder="Go, Vue" /></label>

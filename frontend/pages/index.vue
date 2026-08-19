@@ -4,6 +4,18 @@ import { createUnavailableHomeArchive, loadHomeArchive, type HomeArchiveModule }
 
 const runtimeConfig = useRuntimeConfig()
 const apiBase = runtimeConfig.public.apiBase.replace(/\/$/, '')
+const defaultSiteConfig = {
+  siteTitle: 'Kagari · 全栈工程师与独立创作者',
+  seoSummary: 'Kagari 的作品导向首页：浏览全栈工程、Blog Post、Track、GitHub、相册、服务状态与 Visitor Message 档案。',
+  shareImageUrl: '',
+}
+const { data: siteConfig } = await useAsyncData('public-site-config', async () => {
+  try {
+    return await $fetch<typeof defaultSiteConfig>(`${apiBase}/api/v1/site-config`)
+  } catch {
+    return defaultSiteConfig
+  }
+}, { default: () => defaultSiteConfig })
 const { data, status, refresh } = await useAsyncData('home-archive', () => (
   loadHomeArchive(apiBase, url => $fetch<unknown>(url))
 ), {
@@ -22,11 +34,13 @@ const archiveModules = computed<HomeArchiveModule[]>(() => [
 ])
 
 useSeoMeta({
-  title: 'Kagari · 全栈工程师与独立创作者',
-  description: 'Kagari 的作品导向首页：浏览全栈工程、Blog Post、Track、GitHub、相册、服务状态与 Visitor Message 档案。',
-  ogTitle: 'Kagari · 全栈工程师与独立创作者',
-  ogDescription: '把系统、界面、文字与声音归入同一座公开档案。',
+  title: () => siteConfig.value.siteTitle,
+  description: () => siteConfig.value.seoSummary,
+  ogTitle: () => siteConfig.value.siteTitle,
+  ogDescription: () => siteConfig.value.seoSummary,
+  ogImage: () => siteConfig.value.shareImageUrl || undefined,
   twitterCard: 'summary_large_image',
+  twitterImage: () => siteConfig.value.shareImageUrl || undefined,
 })
 </script>
 

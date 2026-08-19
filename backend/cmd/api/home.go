@@ -72,10 +72,24 @@ func (service appServices) homeArchive(c *fiber.Ctx) error {
 		Blog:            service.homePosts(ctx),
 		Music:           service.homeTracks(ctx),
 		GitHub:          service.homeGitHub(ctx),
-		Gallery:         homeGallerySummary{Availability: availabilityOperational, Count: len(seededGalleryItems)},
+		Gallery:         service.homeGallery(ctx),
 		Status:          service.homeStatus(ctx),
 		VisitorMessages: service.homeVisitorMessages(ctx),
 	})
+}
+
+func (service appServices) homeGallery(ctx context.Context) homeGallerySummary {
+	if service.albumItems == nil {
+		return homeGallerySummary{Availability: availabilityOperational, Count: len(seededGalleryItems)}
+	}
+	items, err := service.albumItems.List(ctx)
+	if err != nil {
+		return homeGallerySummary{Availability: availabilityUnavailable}
+	}
+	return homeGallerySummary{
+		Availability: availabilityOperational,
+		Count:        len(publishedAlbumItems(items)),
+	}
 }
 
 func (service appServices) homeProjects(ctx context.Context) homeCollectionSummary[homeProjectSummary] {

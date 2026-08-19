@@ -4,6 +4,7 @@ export interface GalleryItem {
   note: string
   alt: string
   year: string
+  imageUrl?: string
   anchorX: number
   anchorY: number
   width: string
@@ -31,6 +32,17 @@ function parseColors(value: unknown): GalleryItem['colors'] | null {
   return [value[0], value[1], value[2]]
 }
 
+function parseImageUrl(value: unknown): string | null | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string') return null
+  try {
+    const url = new URL(value)
+    return url.protocol === 'https:' || url.protocol === 'http:' ? value : null
+  } catch {
+    return null
+  }
+}
+
 function parseGalleryItem(value: unknown): GalleryItem | null {
   if (
     !isRecord(value)
@@ -48,13 +60,15 @@ function parseGalleryItem(value: unknown): GalleryItem | null {
     || !aspectRatioPattern.test(value.aspectRatio)
   ) return null
   const colors = parseColors(value.colors)
-  if (!colors) return null
+  const imageUrl = parseImageUrl(value.imageUrl)
+  if (!colors || imageUrl === null) return null
   return {
     id: value.id,
     title: value.title,
     note: value.note,
     alt: value.alt,
     year: value.year,
+    ...(imageUrl === undefined ? {} : { imageUrl }),
     anchorX: value.anchorX,
     anchorY: value.anchorY,
     width: value.width,

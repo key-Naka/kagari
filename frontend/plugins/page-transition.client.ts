@@ -6,6 +6,9 @@ export default defineNuxtPlugin(() => {
     if (to.fullPath === from.fullPath) {
       return true
     }
+    if (to.path.startsWith('/admin') || from.path.startsWith('/admin')) {
+      return true
+    }
     window.dispatchEvent(new Event('kagari:navigation'))
     await transition.cover()
     return true

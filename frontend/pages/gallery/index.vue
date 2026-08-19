@@ -39,7 +39,7 @@ function createSeedArtwork(colors: readonly [string, string, string]): string {
 
 const albumItems = computed(() => seededAlbumItems.value.map(item => ({
   ...item,
-  src: createSeedArtwork(item.colors),
+  src: item.imageUrl ?? createSeedArtwork(item.colors),
 })))
 
 useSeoMeta({

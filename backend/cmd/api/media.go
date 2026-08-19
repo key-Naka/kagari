@@ -60,11 +60,23 @@ type mediaRepository interface {
 	Save(context.Context, mediaRecord) (mediaRecord, error)
 }
 
+type mediaCatalog interface {
+	List(context.Context) ([]mediaRecord, error)
+}
+
 type mediaLookup interface {
 	FindByID(context.Context, uint) (mediaRecord, error)
 }
 
 type gormMediaRepository struct{ db *gorm.DB }
+
+func (repository gormMediaRepository) List(ctx context.Context) ([]mediaRecord, error) {
+	var records []mediaRecord
+	if err := repository.db.WithContext(ctx).Order("created_at DESC").Order("id DESC").Find(&records).Error; err != nil {
+		return nil, fmt.Errorf("list media records: %w", err)
+	}
+	return records, nil
+}
 
 func (repository gormMediaRepository) FindByID(ctx context.Context, id uint) (mediaRecord, error) {
 	var record mediaRecord
@@ -401,6 +413,22 @@ func (service *mediaService) register(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "register media metadata"})
 	}
 	return c.Status(fiber.StatusCreated).JSON(service.response(record))
+}
+
+func (service *mediaService) list(c *fiber.Ctx) error {
+	catalog, ok := service.repository.(mediaCatalog)
+	if !ok {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "list media metadata"})
+	}
+	records, err := catalog.List(c.Context())
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "list media metadata"})
+	}
+	response := make([]mediaResponse, 0, len(records))
+	for _, record := range records {
+		response = append(response, service.response(record))
+	}
+	return c.JSON(response)
 }
 
 func mediaFromRequest(request mediaRegistrationRequest) (mediaRecord, error) {

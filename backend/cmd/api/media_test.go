@@ -32,6 +32,47 @@ func (repository *memoryMediaRepository) Save(_ context.Context, record mediaRec
 	return record, nil
 }
 
+func (repository *memoryMediaRepository) List(context.Context) ([]mediaRecord, error) {
+	records := make([]mediaRecord, 0, len(repository.media))
+	for _, record := range repository.media {
+		records = append(records, record)
+	}
+	return records, nil
+}
+
+func TestAdministratorListsRegisteredMedia(t *testing.T) {
+	repository := &memoryMediaRepository{media: map[string]mediaRecord{
+		"media/image/2026/08/cover.webp": {
+			ID: 1, ObjectKey: "media/image/2026/08/cover.webp", Kind: mediaKindImage,
+			MimeType: "image/webp", Size: 200, OriginalName: "cover.webp", Width: 1200, Height: 630,
+			CreatedAt: time.Date(2026, time.August, 19, 8, 0, 0, 0, time.UTC),
+		},
+	}}
+	service := &mediaService{repository: repository, publicBaseURL: "https://cdn.example.com"}
+	app := newApp(nil, appServices{
+		sessions:   &memorySessionRepository{sessions: map[string]uint{"media-session": 1}},
+		media:      service,
+		corsOrigin: "https://ykagari.top",
+	})
+	request := httptest.NewRequest(fiber.MethodGet, "/api/v1/admin/media", nil)
+	request.Header.Set(fiber.HeaderCookie, sessionCookieName+"=media-session")
+	response, err := app.Test(request)
+	if err != nil {
+		t.Fatalf("list registered media: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != fiber.StatusOK {
+		t.Fatalf("status = %d, want %d", response.StatusCode, fiber.StatusOK)
+	}
+	var records []mediaResponse
+	if err := json.NewDecoder(response.Body).Decode(&records); err != nil {
+		t.Fatalf("decode registered media: %v", err)
+	}
+	if len(records) != 1 || records[0].PublicURL != "https://cdn.example.com/media/image/2026/08/cover.webp" {
+		t.Errorf("registered media = %#v, want managed public URL", records)
+	}
+}
+
 type memoryMediaObjectInspector struct {
 	objects map[string]mediaObjectDetails
 	err     error

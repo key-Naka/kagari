@@ -28,13 +28,15 @@ describe('Portfolio Project 页面契约', () => {
   it('管理员作品页使用受保护会话完成创建、编辑、发布和永久删除', async () => {
     const adminPage = await readFrontendFile('pages/admin/projects.vue')
     const dashboard = await readFrontendFile('pages/admin/index.vue')
+    const adminApi = await readFrontendFile('composables/useAdminApi.ts')
 
     expect(adminPage).toContain("definePageMeta({ middleware: 'admin-auth' })")
     expect(adminPage).toContain("requestApi('/api/v1/admin/projects')")
     expect(adminPage).toContain("method: activeProjectId.value === null ? 'POST' : 'PUT'")
     expect(adminPage).toContain("method: 'DELETE'")
     expect(adminPage).toContain('window.confirm')
-    expect(adminPage).toContain('credentials: \'include\'')
+    expect(adminPage).toContain('useAdminApi()')
+    expect(adminApi).toContain("credentials: 'include'")
     expect(dashboard).toContain('to="/admin/projects"')
   })
 })

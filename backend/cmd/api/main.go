@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -537,6 +538,61 @@ type siteConfig struct {
 	Contents string `gorm:"type:json;not null"`
 }
 
+type publicSiteConfiguration struct {
+	SiteTitle     string `json:"siteTitle"`
+	SEOSummary    string `json:"seoSummary"`
+	ShareImageURL string `json:"shareImageUrl"`
+}
+
+func defaultSiteConfiguration() publicSiteConfiguration {
+	return publicSiteConfiguration{
+		SiteTitle:  "Kagari",
+		SEOSummary: "Kagari 的作品导向首页：浏览全栈工程、Blog Post、Track、GitHub、相册、服务状态与 Visitor Message 档案。",
+	}
+}
+
+func publicConfiguration(contents map[string]any) publicSiteConfiguration {
+	configuration := defaultSiteConfiguration()
+	if value, ok := contents["siteTitle"].(string); ok && value != "" {
+		configuration.SiteTitle = value
+	}
+	if value, ok := contents["seoSummary"].(string); ok && value != "" {
+		configuration.SEOSummary = value
+	}
+	if value, ok := contents["shareImageUrl"].(string); ok {
+		configuration.ShareImageURL = value
+	}
+	return configuration
+}
+
+func validateSiteConfiguration(configuration publicSiteConfiguration) error {
+	configuration.SiteTitle = strings.TrimSpace(configuration.SiteTitle)
+	configuration.SEOSummary = strings.TrimSpace(configuration.SEOSummary)
+	configuration.ShareImageURL = strings.TrimSpace(configuration.ShareImageURL)
+	if count := utf8.RuneCountInString(configuration.SiteTitle); count == 0 || count > 120 {
+		return errors.New("siteTitle must contain between 1 and 120 characters")
+	}
+	if count := utf8.RuneCountInString(configuration.SEOSummary); count == 0 || count > 300 {
+		return errors.New("seoSummary must contain between 1 and 300 characters")
+	}
+	if configuration.ShareImageURL == "" {
+		return nil
+	}
+	parsed, err := url.ParseRequestURI(configuration.ShareImageURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
+		return errors.New("shareImageUrl must be an HTTPS URL")
+	}
+	return nil
+}
+
+func siteConfigurationContents(configuration publicSiteConfiguration) map[string]any {
+	return map[string]any{
+		"siteTitle":     strings.TrimSpace(configuration.SiteTitle),
+		"seoSummary":    strings.TrimSpace(configuration.SEOSummary),
+		"shareImageUrl": strings.TrimSpace(configuration.ShareImageURL),
+	}
+}
+
 type adminRepository interface {
 	Initialize(context.Context, string, string) error
 	FindByUsername(context.Context, string) (admin, error)
@@ -653,6 +709,7 @@ type appServices struct {
 	projects        projectRepository
 	posts           postRepository
 	tracks          trackRepository
+	albumItems      albumItemRepository
 	visitorMessages visitorMessageRepository
 	messageLimiter  visitorMessageRateLimiter
 	mediaRecords    mediaLookup
@@ -679,6 +736,7 @@ func newApp(dependencies []dependency, services ...appServices) *fiber.App {
 	service := services[0]
 	app.Use(cors.New(cors.Config{AllowOrigins: service.corsOrigin, AllowMethods: "GET,POST,PUT,DELETE,OPTIONS", AllowHeaders: "Content-Type", AllowCredentials: true}))
 	app.Get("/api/v1/home", service.homeArchive)
+	app.Get("/api/v1/site-config", service.publicSiteConfig)
 	app.Get("/api/v1/gallery-items", service.publicGalleryItems)
 	app.Get("/api/v1/service-status", service.serviceStatus)
 	app.Get("/api/v1/github", service.githubActivity)
@@ -711,9 +769,14 @@ func newApp(dependencies []dependency, services ...appServices) *fiber.App {
 	app.Get("/api/v1/admin/tracks", service.requireSession(service.adminTracks))
 	app.Post("/api/v1/admin/tracks", service.requireSession(service.createTrack))
 	app.Put("/api/v1/admin/tracks/:id", service.requireSession(service.updateTrack))
+	app.Get("/api/v1/admin/gallery-items", service.requireSession(service.adminGalleryItems))
+	app.Post("/api/v1/admin/gallery-items", service.requireSession(service.createAlbumItem))
+	app.Put("/api/v1/admin/gallery-items/:id", service.requireSession(service.updateAlbumItem))
+	app.Delete("/api/v1/admin/gallery-items/:id", service.requireSession(service.deleteAlbumItem))
 	if service.media != nil {
 		app.Get("/api/v1/media/*", service.media.publicObject)
 		app.Head("/api/v1/media/*", service.media.publicObject)
+		app.Get("/api/v1/admin/media", service.requireSession(service.media.list))
 		app.Post("/api/v1/admin/media/upload-credentials", service.requireSession(service.media.uploadCredentials))
 		app.Post("/api/v1/admin/media", service.requireSession(service.media.register))
 	}
@@ -801,18 +864,30 @@ func (service appServices) getSiteConfig(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "get site configuration"})
 	}
-	return c.JSON(configuration)
+	return c.JSON(publicConfiguration(configuration))
 }
 
 func (service appServices) putSiteConfig(c *fiber.Ctx) error {
-	var configuration map[string]any
-	if err := c.BodyParser(&configuration); err != nil || configuration == nil {
+	var configuration publicSiteConfiguration
+	if err := c.BodyParser(&configuration); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "site configuration must be a JSON object"})
 	}
-	if err := service.config.Save(c.Context(), configuration); err != nil {
+	if err := validateSiteConfiguration(configuration); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	contents := siteConfigurationContents(configuration)
+	if err := service.config.Save(c.Context(), contents); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "save site configuration"})
 	}
-	return c.JSON(configuration)
+	return c.JSON(publicConfiguration(contents))
+}
+
+func (service appServices) publicSiteConfig(c *fiber.Ctx) error {
+	configuration, err := service.config.Get(c.Context())
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "get site configuration"})
+	}
+	return c.JSON(publicConfiguration(configuration))
 }
 
 func (service appServices) setSessionCookie(c *fiber.Ctx, value string, maxAge int) {
@@ -871,7 +946,10 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	if err := db.AutoMigrate(&admin{}, &siteConfig{}, &portfolioProject{}, &blogPost{}, &mediaRecord{}, &track{}, &visitorMessage{}); err != nil {
+	if err := db.AutoMigrate(&admin{}, &siteConfig{}, &portfolioProject{}, &blogPost{}, &mediaRecord{}, &track{}, &albumItem{}, &contentMigration{}, &visitorMessage{}); err != nil {
+		panic(err)
+	}
+	if err := migrateSeededAlbumItems(context.Background(), db); err != nil {
 		panic(err)
 	}
 	redisDB, err := redisDatabaseFromEnvironment()
@@ -896,6 +974,7 @@ func main() {
 		projects:        gormProjectRepository{db: db},
 		posts:           gormPostRepository{db: db},
 		tracks:          gormTrackRepository{db: db},
+		albumItems:      gormAlbumItemRepository{db: db},
 		visitorMessages: gormVisitorMessageRepository{db: db},
 		messageLimiter:  redisVisitorMessageRateLimiter{client: client, limit: 3, window: 10 * time.Minute},
 		mediaRecords:    mediaRecords,

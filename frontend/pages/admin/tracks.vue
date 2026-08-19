@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, shallowRef } from 'vue'
 import type { TrackMedia } from '~/stores/player'
+import type { AdminMedia } from '~/composables/useAdminMediaUpload'
 
 definePageMeta({ middleware: 'admin-auth' })
 
@@ -19,28 +20,8 @@ interface TrackForm {
   sortOrder: number
 }
 
-interface UploadCredentials {
-  uploadToken: string
-  uploadUrl: string
-  objectKey: string
-}
-
-interface DetectedMetadata {
-  width: number
-  height: number
-  durationMs: number
-}
-
-type ApiErrorPayload = { error?: string }
-
-class ApiError extends Error {
-  constructor(readonly status: number, message: string) {
-    super(message)
-  }
-}
-
-const runtimeConfig = useRuntimeConfig()
-const apiBase = runtimeConfig.public.apiBase.replace(/\/$/, '')
+const { requestApi, redirectExpiredSession } = useAdminApi()
+const { uploadMedia } = useAdminMediaUpload()
 const tracks = shallowRef<AdminTrack[]>([])
 const activeTrackId = shallowRef<number | null>(null)
 const coverFile = shallowRef<File | null>(null)
@@ -59,27 +40,6 @@ function newTrackForm(): TrackForm {
   return { title: '', enabled: false, sortOrder: 0 }
 }
 
-async function responseError(response: Response): Promise<string> {
-  const fallback = `请求失败（HTTP ${response.status}）。`
-  try {
-    const payload = await response.json() as ApiErrorPayload
-    return payload.error || fallback
-  } catch {
-    return fallback
-  }
-}
-
-async function requestApi(path: string, options: RequestInit = {}): Promise<Response> {
-  try {
-    const response = await fetch(`${apiBase}${path}`, { ...options, credentials: 'include' })
-    if (!response.ok) throw new ApiError(response.status, await responseError(response))
-    return response
-  } catch (error) {
-    if (error instanceof Error) throw error
-    throw new Error('网络请求失败，请检查连接后重试。')
-  }
-}
-
 async function loadTracks(): Promise<void> {
   isLoading.value = true
   errorMessage.value = ''
@@ -87,10 +47,7 @@ async function loadTracks(): Promise<void> {
     const response = await requestApi('/api/v1/admin/tracks')
     tracks.value = await response.json() as AdminTrack[]
   } catch (error) {
-    if (error instanceof ApiError && error.status === 401) {
-      await navigateTo('/admin/login?reason=session-expired')
-      return
-    }
+    if (await redirectExpiredSession(error)) return
     errorMessage.value = error instanceof Error ? error.message : '无法读取 Track。'
   } finally {
     isLoading.value = false
@@ -123,81 +80,6 @@ function selectAudio(event: Event): void {
   audioFile.value = (event.currentTarget as HTMLInputElement).files?.[0] ?? null
 }
 
-async function detectImageMetadata(file: File): Promise<DetectedMetadata> {
-  const objectUrl = URL.createObjectURL(file)
-  const image = new Image()
-  try {
-    return await new Promise((resolve, reject) => {
-      image.addEventListener('load', () => {
-        if (image.naturalWidth <= 0 || image.naturalHeight <= 0) {
-          reject(new Error('无法识别封面尺寸。'))
-          return
-        }
-        resolve({ width: image.naturalWidth, height: image.naturalHeight, durationMs: 0 })
-      }, { once: true })
-      image.addEventListener('error', () => reject(new Error('无法读取封面文件。')), { once: true })
-      image.src = objectUrl
-    })
-  } finally {
-    URL.revokeObjectURL(objectUrl)
-  }
-}
-
-async function detectAudioMetadata(file: File): Promise<DetectedMetadata> {
-  const objectUrl = URL.createObjectURL(file)
-  const audio = new Audio()
-  audio.preload = 'metadata'
-  try {
-    return await new Promise((resolve, reject) => {
-      audio.addEventListener('loadedmetadata', () => {
-        if (!Number.isFinite(audio.duration) || audio.duration <= 0) {
-          reject(new Error('无法识别音频时长。'))
-          return
-        }
-        resolve({ width: 0, height: 0, durationMs: Math.round(audio.duration * 1000) })
-      }, { once: true })
-      audio.addEventListener('error', () => reject(new Error('无法读取音频媒体元数据。')), { once: true })
-      audio.src = objectUrl
-      audio.load()
-    })
-  } finally {
-    audio.removeAttribute('src')
-    audio.load()
-    URL.revokeObjectURL(objectUrl)
-  }
-}
-
-async function uploadMedia(file: File, kind: 'image' | 'audio'): Promise<TrackMedia> {
-  const metadata = kind === 'image' ? await detectImageMetadata(file) : await detectAudioMetadata(file)
-  const credentialsResponse = await requestApi('/api/v1/admin/media/upload-credentials', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ kind, mimeType: file.type, size: file.size, filename: file.name }),
-  })
-  const credentials = await credentialsResponse.json() as UploadCredentials
-
-  const upload = new FormData()
-  upload.append('token', credentials.uploadToken)
-  upload.append('key', credentials.objectKey)
-  upload.append('file', file)
-  const uploadResponse = await fetch(credentials.uploadUrl, { method: 'POST', body: upload })
-  if (!uploadResponse.ok) throw new Error(`媒体上传失败（HTTP ${uploadResponse.status}）。`)
-
-  const registrationResponse = await requestApi('/api/v1/admin/media', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      objectKey: credentials.objectKey,
-      kind,
-      mimeType: file.type,
-      size: file.size,
-      originalName: file.name,
-      ...metadata,
-    }),
-  })
-  return await registrationResponse.json() as TrackMedia
-}
-
 async function saveTrack(): Promise<void> {
   errorMessage.value = ''
   successMessage.value = ''
@@ -213,11 +95,11 @@ async function saveTrack(): Promise<void> {
     let audio = existing?.audio ?? null
     if (coverFile.value) {
       uploadStage.value = '正在上传封面……'
-      cover = await uploadMedia(coverFile.value, 'image')
+      cover = await uploadMedia(coverFile.value, 'image', stage => { uploadStage.value = stage }) as AdminMedia as TrackMedia
     }
     if (audioFile.value) {
       uploadStage.value = '正在识别时长并上传音频……'
-      audio = await uploadMedia(audioFile.value, 'audio')
+      audio = await uploadMedia(audioFile.value, 'audio', stage => { uploadStage.value = stage }) as AdminMedia as TrackMedia
     }
     if (!cover || !audio) throw new Error('Track 的封面或音频媒体缺失。')
 
@@ -234,10 +116,7 @@ async function saveTrack(): Promise<void> {
     startCreate()
     successMessage.value = wasCreating ? 'Track 已创建。' : 'Track 已更新。'
   } catch (error) {
-    if (error instanceof ApiError && error.status === 401) {
-      await navigateTo('/admin/login?reason=session-expired')
-      return
-    }
+    if (await redirectExpiredSession(error)) return
     errorMessage.value = error instanceof Error ? error.message : '保存 Track 失败。'
   } finally {
     uploadStage.value = ''
